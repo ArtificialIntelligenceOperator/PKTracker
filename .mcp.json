@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "pktracker": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "src/PKTracker.Mcp",
+        "-c",
+        "Release",
+        "--"
+      ],
+      "env": {}
+    }
+  }
+}

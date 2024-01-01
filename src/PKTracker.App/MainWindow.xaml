@@ -1,0 +1,627 @@
+<Window x:Class="PKTracker.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sp="clr-namespace:ScottPlot.WPF;assembly=ScottPlot.WPF"
+        xmlns:views="clr-namespace:PKTracker.App.Views"
+        Title="PKTracker" Icon="PKTracker.ico" Width="1280" Height="820" MinWidth="900" MinHeight="600"
+        FontFamily="Segoe UI" FontSize="12"
+        Background="{StaticResource Bg0}" Foreground="{StaticResource Text}">
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Background="{StaticResource Bg1}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="14,5">
+            <StackPanel Orientation="Horizontal">
+                <Ellipse Width="8" Height="8" Fill="{StaticResource Accent}" Margin="0,0,8,0" VerticalAlignment="Center" />
+                <TextBlock Text="БД: " Style="{StaticResource Dim}" />
+                <TextBlock x:Name="DbStatusText" Text="—" Margin="0,0,16,0" />
+                <TextBlock Text="Авто-импорт: " Style="{StaticResource Dim}" />
+                <TextBlock x:Name="WatcherStatusText" Text="—" />
+            </StackPanel>
+        </Border>
+
+        <TabControl x:Name="Tabs" Style="{StaticResource NavTabs}" SelectionChanged="Tabs_SelectionChanged">
+
+            <!-- ── Обзор ───────────────────────────────────────────── -->
+            <TabItem Header="Обзор" x:Name="OverviewTab">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="220" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal">
+                        <ComboBox x:Name="OverviewKind" Width="120" SelectedIndex="0" SelectionChanged="OverviewKind_Changed">
+                            <ComboBoxItem Content="Кеш" />
+                            <ComboBoxItem Content="Турниры" />
+                        </ComboBox>
+                        <Button Style="{StaticResource AccentButton}" Content="Обновить" Margin="8,0,0,0" Click="RefreshOverview_Click" />
+                        <TextBlock x:Name="OverviewNote" Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource Dim}" />
+                    </StackPanel>
+                    <UniformGrid Grid.Row="1" Rows="1" Margin="0,10,0,10" x:Name="KpiPanel">
+                        <Border Style="{StaticResource Card}" Margin="0,0,0,0">
+                            <StackPanel><TextBlock Style="{StaticResource KpiLabel}" Text="Раздачи" /><TextBlock x:Name="KpiHands" Style="{StaticResource Kpi}" Text="—" /></StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="8,0,0,0">
+                            <StackPanel><TextBlock x:Name="KpiNetLabel" Style="{StaticResource KpiLabel}" Text="Выигрыш" /><TextBlock x:Name="KpiNet" Style="{StaticResource SignKpi}" Text="—" /></StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="8,0,0,0">
+                            <StackPanel><TextBlock Style="{StaticResource KpiLabel}" Text="bb/100" /><TextBlock x:Name="KpiBb100" Style="{StaticResource SignKpi}" Text="—" /></StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="8,0,0,0">
+                            <StackPanel><TextBlock x:Name="KpiEvLabel" Style="{StaticResource KpiLabel}" Text="All-in EV bb/100" /><TextBlock x:Name="KpiEvBb100" Style="{StaticResource SignKpi}" Text="—" /></StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="8,0,0,0">
+                            <StackPanel><TextBlock Style="{StaticResource KpiLabel}" Text="Рейк" /><TextBlock x:Name="KpiRake" Style="{StaticResource Kpi}" Text="—" /></StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="8,0,0,0">
+                            <StackPanel><TextBlock Style="{StaticResource KpiLabel}" Text="VPIP / PFR" /><TextBlock x:Name="KpiVpip" Style="{StaticResource Kpi}" Text="—" /></StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Margin="8,0,0,0">
+                            <StackPanel><TextBlock Style="{StaticResource KpiLabel}" Text="Часы / сессии" /><TextBlock x:Name="KpiHours" Style="{StaticResource Kpi}" Text="—" /></StackPanel>
+                        </Border>
+                    </UniformGrid>
+                    <Border Grid.Row="2" Style="{StaticResource Card}" Padding="4">
+                        <sp:WpfPlot x:Name="NetPlot" />
+                    </Border>
+                    <Grid Grid.Row="3">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition /><ColumnDefinition /><ColumnDefinition />
+                        </Grid.ColumnDefinitions>
+                        <DockPanel Margin="0,0,6,0">
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource H}" Text="По позициям" />
+                            <DataGrid x:Name="ByPositionGrid">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Позиция" Binding="{Binding Key}" />
+                                    <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                                    <DataGridTextColumn Header="bb/100" Binding="{Binding Bb100, StringFormat=F1}" ElementStyle="{StaticResource SignCell}" />
+                                    <DataGridTextColumn Header="VPIP" Binding="{Binding VpipPct, StringFormat=F0}" />
+                                    <DataGridTextColumn Header="PFR" Binding="{Binding PfrPct, StringFormat=F0}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                        <DockPanel Grid.Column="1" Margin="0,0,6,0">
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource H}" Text="По лимитам" />
+                            <DataGrid x:Name="ByLimitGrid">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Лимит" Binding="{Binding Key}" />
+                                    <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                                    <DataGridTextColumn Header="bb/100" Binding="{Binding Bb100, StringFormat=F1}" ElementStyle="{StaticResource SignCell}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                        <DockPanel Grid.Column="2">
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource H}" Text="По числу игроков" />
+                            <DataGrid x:Name="BySizeGrid">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Раздано" Binding="{Binding Key}" />
+                                    <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                                    <DataGridTextColumn Header="bb/100" Binding="{Binding Bb100, StringFormat=F1}" ElementStyle="{StaticResource SignCell}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Сессии ──────────────────────────────────────────── -->
+            <TabItem Header="Сессии" x:Name="SessionsTab">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Dim}" Margin="0,0,0,6"
+                               Text="Кеш-сессии: разрыв между руками больше заданного в настройках (по умолчанию 30 мин) — новая сессия." />
+                    <DataGrid x:Name="SessionsGrid">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Начало" Binding="{Binding StartLocal, StringFormat=dd.MM.yyyy HH:mm}" />
+                            <DataGridTextColumn Header="Длительность" Binding="{Binding DurationText}" />
+                            <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                            <DataGridTextColumn Header="Столов" Binding="{Binding Tables}" />
+                            <DataGridTextColumn Header="Выигрыш, $" Binding="{Binding Net, StringFormat=F2}" ElementStyle="{StaticResource SignCell}" />
+                            <DataGridTextColumn Header="bb/100" Binding="{Binding Bb100, StringFormat=F1}" ElementStyle="{StaticResource SignCell}" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ── Турниры ─────────────────────────────────────────── -->
+            <TabItem Header="Турниры" x:Name="TournamentsTab">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="2*" MinHeight="110" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="2*" MinHeight="120" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="2*" MinHeight="110" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource H}" Text="История турниров (.ots)" />
+                        <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap"
+                                   Text="Папка с итогами турниров из клиента — просматриваются и подпапки. Место, призы, баунти и размер поля есть только в .ots, в hand history их нет. Повторная загрузка не делает дублей: турнир обновляется." />
+                        <DockPanel Margin="0,4,0,0">
+                            <Button DockPanel.Dock="Right" Content="Обновить" Click="TournamentsRefresh_Click" Margin="6,0,0,0" />
+                            <Button DockPanel.Dock="Right" x:Name="TournamentLoadButton" Style="{StaticResource AccentButton}"
+                                    Content="Загрузить итоги" Click="TournamentLoad_Click" Margin="6,0,0,0" />
+                            <Button DockPanel.Dock="Right" Content="Обзор…" Click="TournamentBrowse_Click" Margin="6,0,0,0" />
+                            <TextBox x:Name="TournamentFolderBox" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <ProgressBar x:Name="TournamentProgressBar" Height="6" Margin="0,4,0,2" />
+                        <TextBlock x:Name="TournamentLoadStatus" TextWrapping="Wrap" Style="{StaticResource Dim}" />
+                    </StackPanel>
+
+                    <TextBlock x:Name="TournamentSummaryText" Grid.Row="1" Margin="0,8,0,6" TextWrapping="Wrap" />
+
+                    <DockPanel Grid.Row="2">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+                            <Button DockPanel.Dock="Right" Content="Все форматы" Click="FormatsReset_Click" />
+                            <TextBlock Style="{StaticResource H}" VerticalAlignment="Center"
+                                       Text="Форматы: сколько сыграно и с каким EV (выберите строку — график и список ниже отфильтруются)" />
+                        </DockPanel>
+                        <DataGrid x:Name="FormatsGrid" SelectionMode="Single" SelectionChanged="FormatsGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Формат" Binding="{Binding Format}" Width="*" MinWidth="150" />
+                                <DataGridTextColumn Header="Турниров" Binding="{Binding Count}" />
+                                <DataGridTextColumn Header="С раздачами" Binding="{Binding WithHands}" />
+                                <DataGridTextColumn Header="Входов" Binding="{Binding Entries}" />
+                                <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                                <DataGridTextColumn Header="ITM" Binding="{Binding ItmText}" />
+                                <DataGridTextColumn Header="Ср. место" Binding="{Binding AvgFinishText}" />
+                                <DataGridTextColumn Header="Затраты" Binding="{Binding CostText}" />
+                                <DataGridTextColumn Header="Призы" Binding="{Binding WonText}" />
+                                <DataGridTextColumn Header="Профит" Binding="{Binding ProfitText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="ROI" Binding="{Binding RoiText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="$EV" Binding="{Binding DollarEvText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Фишки" Binding="{Binding ChipText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Chip EV" Binding="{Binding ChipEvText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Удача" Binding="{Binding ChipLuckText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Олл-ины" Binding="{Binding AllIns}" />
+                                <DataGridTextColumn Header="Поле" Binding="{Binding FieldText}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="3" Height="5" Margin="0,4" HorizontalAlignment="Stretch"
+                                  Background="{StaticResource BorderBrush}" />
+
+                    <DockPanel Grid.Row="4">
+                        <TextBlock x:Name="TourneyChartNote" DockPanel.Dock="Top" Style="{StaticResource H}" Margin="0,0,0,4"
+                                   TextWrapping="Wrap" Text="Фишки и Chip EV нарастающим итогом" />
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+                            <TextBlock Text="Игроков за столом:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="0,0,4,0" />
+                            <ComboBox x:Name="TourneyPlayersFilter" Width="120" SelectedIndex="0" SelectionChanged="TourneyFilter_Changed">
+                                <ComboBoxItem Content="Все" />
+                                <ComboBoxItem Content="2 (хедз-ап)" />
+                                <ComboBoxItem Content="3" />
+                                <ComboBoxItem Content="4–6" />
+                                <ComboBoxItem Content="7+" />
+                            </ComboBox>
+                            <TextBlock Text="Позиция:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="12,0,4,0" />
+                            <ComboBox x:Name="TourneyPositionFilter" Width="90" SelectionChanged="TourneyFilter_Changed" />
+                            <TextBlock Text="Стек:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="12,0,4,0" />
+                            <ComboBox x:Name="TourneyStackFilter" Width="120" SelectedIndex="0" SelectionChanged="TourneyFilter_Changed">
+                                <ComboBoxItem Content="Все" />
+                                <ComboBoxItem Content="менее 10bb" />
+                                <ComboBoxItem Content="10–25bb" />
+                                <ComboBoxItem Content="25–50bb" />
+                                <ComboBoxItem Content="более 50bb" />
+                            </ComboBox>
+                            <Button Content="Сбросить фильтры" Click="TourneyFiltersReset_Click" Margin="12,0,0,0" />
+                            <TextBlock />
+                        </DockPanel>
+                        <sp:WpfPlot x:Name="TourneyPlot" />
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="5" Height="5" Margin="0,4" HorizontalAlignment="Stretch"
+                                  Background="{StaticResource BorderBrush}" />
+
+                    <DockPanel Grid.Row="6">
+                        <TextBlock x:Name="TournamentListHeader" DockPanel.Dock="Top" Style="{StaticResource H}" Text="Турниры" Margin="0,0,0,4" />
+                        <DataGrid x:Name="TournamentsGrid">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Формат" Binding="{Binding Format}" MinWidth="120" />
+                                <DataGridTextColumn Header="Старт" Binding="{Binding StartLocal, StringFormat=dd.MM HH:mm}" />
+                                <DataGridTextColumn Header="Турнир" Binding="{Binding Name}" Width="*" />
+                                <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                                <DataGridTextColumn Header="Входов" Binding="{Binding Entries}" />
+                                <DataGridTextColumn Header="Бай-ин" Binding="{Binding BuyInText}" />
+                                <DataGridTextColumn Header="Место" Binding="{Binding FinishText}" />
+                                <DataGridTextColumn Header="Приз" Binding="{Binding WonText}" />
+                                <DataGridTextColumn Header="Итог" Binding="{Binding ProfitText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="$EV" Binding="{Binding DollarEvText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Фишки" Binding="{Binding ChipText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Chip EV" Binding="{Binding ChipEvText}" ElementStyle="{StaticResource SignCell}" />
+                                <DataGridTextColumn Header="Олл-ины" Binding="{Binding AllIns}" />
+                                <DataGridTextColumn Header="Валюта" Binding="{Binding Currency}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Отчёты ──────────────────────────────────────────── -->
+            <TabItem Header="Отчёты" x:Name="ReportsTab">
+                <views:ReportsView x:Name="Reports" />
+            </TabItem>
+
+            <!-- ── Раздачи ─────────────────────────────────────────── -->
+            <TabItem Header="Раздачи" x:Name="HandsTab">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <ComboBox x:Name="HandsKind" Width="110" SelectedIndex="0">
+                            <ComboBoxItem Content="Все" />
+                            <ComboBoxItem Content="Кеш" />
+                            <ComboBoxItem Content="Турниры" />
+                        </ComboBox>
+                        <ComboBox x:Name="HandsPosition" Width="90" Margin="6,0" />
+                        <Button Style="{StaticResource AccentButton}" Content="Показать" Click="HandsShow_Click" />
+                        <Button Content="◀" Click="HandsPrev_Click" />
+                        <Button Content="▶" Click="HandsNext_Click" />
+                        <TextBlock x:Name="HandsPageText" VerticalAlignment="Center" Style="{StaticResource Dim}" />
+                        <TextBlock Text="  двойной клик — реплеер" VerticalAlignment="Center" Style="{StaticResource Dim}" />
+                    </StackPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <TextBlock DockPanel.Dock="Left" Text="Фильтр:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <Button DockPanel.Dock="Right" Content="Сбросить" Click="HandsFilterReset_Click" Margin="6,0,0,0" />
+                        <TextBox x:Name="HandsFilterBox" FontFamily="Consolas" KeyDown="HandsFilterBox_KeyDown"
+                                 ToolTip="Выражение над вашей рукой, как в условиях статов. Enter — применить.&#10;Примеры:&#10;  Pfr &amp;&amp; SawShowdown &amp;&amp; !WonAtShowdown&#10;  NetWonBbX100 &lt;= -5000&#10;  EvNetWon != null &amp;&amp; EvNetWon - NetWon &gt; 1000&#10;  HoleClass == 0 &amp;&amp; Position == &quot;BB&quot;  (AA на BB)&#10;  ThreeBet &amp;&amp; Hand.PlayersDealt &gt;= 5&#10;Поля: Vpip Pfr ThreeBet SawFlop SawTurn SawRiver SawShowdown WonAtShowdown WonHand AllIn Position StackBb NetWon NetWonBbX100 EvNetWon Invested HoleClass Hand.BombPot Hand.RunItTwice Hand.PlayersDealt Hand.BigBlind" />
+                    </DockPanel>
+                    <DataGrid x:Name="HandsGrid" MouseDoubleClick="HandsGrid_DoubleClick">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Время" Binding="{Binding PlayedLocal, StringFormat=dd.MM HH:mm:ss}" />
+                            <DataGridTextColumn Header="Стол" Binding="{Binding Row.Table}" Width="*" />
+                            <DataGridTextColumn Header="Ставки" Binding="{Binding Row.Stakes}" />
+                            <DataGridTextColumn Header="Поз." Binding="{Binding PositionText}" />
+                            <DataGridTextColumn Header="Карты" Binding="{Binding Row.Cards}" />
+                            <DataGridTextColumn Header="Итог" Binding="{Binding NetText}" ElementStyle="{StaticResource SignCell}" />
+                            <DataGridTextColumn Header="bb" Binding="{Binding NetBb, StringFormat=F1}" ElementStyle="{StaticResource SignCell}" />
+                            <DataGridTextColumn Header="EV" Binding="{Binding EvText}" ElementStyle="{StaticResource SignCell}" />
+                            <DataGridTextColumn Header="Банк" Binding="{Binding PotText}" />
+                            <DataGridTextColumn Header="#" Binding="{Binding Row.ExternalId}" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ── Игроки ──────────────────────────────────────────── -->
+            <TabItem Header="Игроки" x:Name="PlayersTab">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Margin="0,0,8,0">
+                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                            <Button DockPanel.Dock="Right" Style="{StaticResource AccentButton}" Content="Найти" Click="PlayerSearch_Click" Margin="6,0,0,0" />
+                            <TextBox x:Name="PlayerSearchBox" KeyDown="PlayerSearchBox_KeyDown" />
+                        </DockPanel>
+                        <DataGrid x:Name="PlayersGrid" SelectionChanged="PlayersGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Ник" Binding="{Binding Nickname}" Width="*" />
+                                <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                    <Grid Grid.Column="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="160" />
+                        </Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="PlayerTitle" Style="{StaticResource H}" Text="Выберите игрока" Margin="0,0,12,0" />
+                            <ComboBox x:Name="PlayerKind" Width="110" SelectedIndex="0" SelectionChanged="PlayerKind_Changed" VerticalAlignment="Center">
+                                <ComboBoxItem Content="Кеш" />
+                                <ComboBoxItem Content="Турниры" />
+                            </ComboBox>
+                        </StackPanel>
+                        <DataGrid x:Name="PlayerStatsGrid" Grid.Row="1" Margin="0,6,0,0" MouseDoubleClick="PlayerStatsGrid_DoubleClick" ToolTip="Двойной клик — попап стата">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Стат" Binding="{Binding Title}" Width="160" />
+                                <DataGridTextColumn Header="Значение" Binding="{Binding Value}" />
+                                <DataGridTextColumn Header="Выборка" Binding="{Binding Sample}" />
+                                <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <StackPanel Grid.Row="2" Margin="0,8,0,4">
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="Добавить заметку" Click="AddNote_Click" Margin="6,0,0,0" />
+                                <TextBox x:Name="NoteBox" />
+                            </DockPanel>
+                            <DockPanel Margin="0,6,0,0">
+                                <Button DockPanel.Dock="Right" Content="Склеить: это тот же игрок" Click="MergePlayer_Click" Margin="6,0,0,0"
+                                        ToolTip="Указанный ник станет алиасом выбранного игрока: его раздачи, статы и заметки перейдут сюда" />
+                                <TextBlock DockPanel.Dock="Left" Text="Старый ник:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <TextBox x:Name="MergeBox" />
+                            </DockPanel>
+                        </StackPanel>
+                        <ListBox x:Name="NotesList" Grid.Row="3" DisplayMemberPath="Text" />
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Ликфайндер ──────────────────────────────────────── -->
+            <TabItem Header="Ликфайндер" x:Name="LeaksTab">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <ComboBox x:Name="LeaksKind" Width="120" SelectedIndex="0" SelectionChanged="LeaksKind_Changed">
+                            <ComboBoxItem Content="Кеш" />
+                            <ComboBoxItem Content="Турниры" />
+                        </ComboBox>
+                        <TextBlock Margin="12,0,0,0" VerticalAlignment="Center" Style="{StaticResource Dim}" TextWrapping="Wrap"
+                                   Text="Ваши статы против пула — всех остальных игроков из вашей же базы. Отклонение считается значимым при достаточной выборке." />
+                    </StackPanel>
+                    <DataGrid x:Name="LeaksGrid">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Стат" Binding="{Binding Title}" Width="160" />
+                            <DataGridTextColumn Header="Вы" Binding="{Binding HeroText}" />
+                            <DataGridTextColumn Header="Выборка" Binding="{Binding HeroSample}" />
+                            <DataGridTextColumn Header="Пул" Binding="{Binding PoolText}" />
+                            <DataGridTextColumn Header="Выборка пула" Binding="{Binding PoolSample}" />
+                            <DataGridTextColumn Header="Разница" Binding="{Binding DiffText}" />
+                            <DataGridTextColumn Header="Оценка" Binding="{Binding Verdict}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ── HUD ─────────────────────────────────────────────── -->
+            <TabItem Header="HUD" x:Name="HudTab">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <CheckBox x:Name="HudEnabledBox" Content="HUD включён" VerticalAlignment="Center" Click="HudEnabled_Click" Margin="0,0,12,0" />
+                        <Button Content="Обновить" Click="HudRefresh_Click" />
+                        <Button Content="Привязать выбранное окно к выбранному столу" Click="HudBind_Click" />
+                    </StackPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Раскладка:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <ComboBox x:Name="HudProfileBox" Width="200" SelectionChanged="HudProfileBox_Changed" />
+                        <Button Style="{StaticResource AccentButton}" Content="Редактор HUD и попапов"
+                                Click="HudEditor_Click" Margin="8,0,0,0" />
+                    </StackPanel>
+                    <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Style="{StaticResource Dim}" Margin="0,0,0,6"
+                               Text="Окна клиента ищутся по имени процесса и классу окна (Настройки). Привязка: .data-канал → заголовок окна + последняя раздача стола из HH → ручная привязка. Статы строятся только по вашим раздачам (правила рума)." />
+                    <Border DockPanel.Dock="Bottom" Style="{StaticResource Card}" Margin="0,10,0,0" Height="300">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Style="{StaticResource H}" Text="Профиль HUD" Margin="0,0,12,0" VerticalAlignment="Center" />
+                                <ComboBox x:Name="ProfileKind" Width="120" SelectedIndex="0" SelectionChanged="ProfileKind_Changed">
+                                    <ComboBoxItem Content="Кеш" />
+                                    <ComboBoxItem Content="Турниры" />
+                                </ComboBox>
+                                <Button Style="{StaticResource AccentButton}" Content="Сохранить профиль" Click="ProfileSave_Click" Margin="12,0,6,0" />
+                                <TextBlock x:Name="ProfileStatus" Style="{StaticResource Dim}" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition /><ColumnDefinition Width="Auto" /><ColumnDefinition /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="260" />
+                                </Grid.ColumnDefinitions>
+                                <DockPanel>
+                                    <TextBlock DockPanel.Dock="Top" Text="Доступные статы" Style="{StaticResource Dim}" Margin="0,0,0,4" />
+                                    <ListBox x:Name="ProfileAvailable" MouseDoubleClick="ProfileAdd_Click" />
+                                </DockPanel>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="8,0">
+                                    <Button Content="→" Click="ProfileAdd_Click" Margin="0,0,0,6" />
+                                    <Button Content="←" Click="ProfileRemove_Click" Margin="0,0,0,6" />
+                                    <Button Content="↵ строка" Click="ProfileBreak_Click" />
+                                </StackPanel>
+                                <DockPanel Grid.Column="2">
+                                    <TextBlock DockPanel.Dock="Top" Text="В панели (сверху вниз; «── новая строка ──» — перенос)" Style="{StaticResource Dim}" Margin="0,0,0,4" />
+                                    <ListBox x:Name="ProfileSelected" MouseDoubleClick="ProfileRemove_Click" />
+                                </DockPanel>
+                                <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="8,0">
+                                    <Button Content="↑" Click="ProfileUp_Click" Margin="0,0,0,6" />
+                                    <Button Content="↓" Click="ProfileDown_Click" />
+                                </StackPanel>
+                                <DockPanel Grid.Column="4" Margin="8,0,0,0">
+                                    <TextBlock DockPanel.Dock="Top" Text="Предпросмотр панели" Style="{StaticResource Dim}" Margin="0,0,0,4" />
+                                    <Border Background="#1E1712" BorderBrush="#6E4A2C" BorderThickness="1" CornerRadius="4" Padding="6,4" VerticalAlignment="Top">
+                                        <StackPanel x:Name="ProfilePreview" />
+                                    </Border>
+                                </DockPanel>
+                            </Grid>
+                        </DockPanel>
+                    </Border>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition /><ColumnDefinition />
+                        </Grid.ColumnDefinitions>
+                        <DockPanel Margin="0,0,6,0">
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource H}" Text="Окна столов" />
+                            <DataGrid x:Name="HudWindowsGrid">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Заголовок" Binding="{Binding WindowTitle}" Width="*" />
+                                    <DataGridTextColumn Header="Стол" Binding="{Binding TableName}" />
+                                    <DataGridTextColumn Header="Игроков" Binding="{Binding Players}" />
+                                    <DataGridTextColumn Header="Источник" Binding="{Binding Source}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                        <DockPanel Grid.Column="1">
+                            <TextBlock DockPanel.Dock="Top" Style="{StaticResource H}" Text="Активные столы (раздачи за последние часы — см. настройки)" />
+                            <DataGrid x:Name="ActiveTablesGrid">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Стол" Binding="{Binding TableName}" Width="*" />
+                                    <DataGridTextColumn Header="Тип" Binding="{Binding Kind}" />
+                                    <DataGridTextColumn Header="Мест" Binding="{Binding MaxSeats}" />
+                                    <DataGridTextColumn Header="Последняя рука (UTC)" Binding="{Binding LastHandAt, StringFormat=HH:mm:ss}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </DockPanel>
+                    </Grid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ── Импорт ──────────────────────────────────────────── -->
+            <TabItem Header="Импорт" x:Name="ImportTab">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource H}" Text="Мои аккаунты (Hero)" />
+                        <TextBlock Style="{StaticResource Dim}" TextWrapping="Wrap"
+                                   Text="Импортируются только раздачи, где один из этих ников сидит за столом. Файл без ваших раздач отклоняется целиком — чужие архивы импортировать нельзя (правила рума)." />
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <ListBox x:Name="HeroList" Width="220" Height="70" />
+                            <StackPanel Margin="6,0,0,0">
+                                <TextBox x:Name="HeroBox" Width="180" Margin="0,0,0,4" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Добавить" Click="HeroAdd_Click" />
+                                    <Button Content="Удалить" Click="HeroRemove_Click" />
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Grid.Row="1" Margin="0,8,0,0">
+                        <TextBlock Style="{StaticResource H}" Text="Ручной импорт" />
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="Обзор…" Click="ImportBrowse_Click" Margin="6,0,0,0" />
+                            <TextBox x:Name="ImportFolderBox" />
+                        </DockPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button x:Name="ImportButton" Style="{StaticResource AccentButton}" Content="Импортировать" Click="Import_Click" />
+                            <Button x:Name="ImportCancelButton" Content="Отмена" Click="ImportCancel_Click" IsEnabled="False" />
+                        </StackPanel>
+                        <ProgressBar x:Name="ImportProgressBar" Height="14" Margin="0,6,0,2" />
+                        <TextBlock x:Name="ImportStatusText" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Row="2" Margin="0,8,0,0" Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource H}" Text="Ошибки импорта" />
+                        <Button Content="Обновить" Click="ImportErrors_Click" Margin="12,4,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <Grid Grid.Row="3">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition /><ColumnDefinition />
+                        </Grid.ColumnDefinitions>
+                        <DataGrid x:Name="ImportErrorsGrid" SelectionChanged="ImportErrorsGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Когда" Binding="{Binding SeenAt, StringFormat=dd.MM HH:mm}" />
+                                <DataGridTextColumn Header="Сообщение" Binding="{Binding Message}" Width="*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                        <TextBox x:Name="ImportErrorBody" Grid.Column="1" Margin="6,0,0,0" IsReadOnly="True" FontFamily="Consolas"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Статы ───────────────────────────────────────────── -->
+            <TabItem Header="Статы" x:Name="StatsTab">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="320" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Margin="0,0,8,0">
+                        <Button DockPanel.Dock="Top" Content="Новый стат" Click="StatNew_Click" HorizontalAlignment="Left" Margin="0,0,0,6" />
+                        <DataGrid x:Name="StatDefsGrid" SelectionChanged="StatDefsGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Код" Binding="{Binding Code}" Width="*" />
+                                <DataGridTextColumn Header="Заголовок" Binding="{Binding Title}" />
+                                <DataGridTextColumn Header="Тип" Binding="{Binding Scope}" />
+                                <DataGridTextColumn Header="v" Binding="{Binding Version}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                    <DockPanel Grid.Column="1">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Style="{StaticResource Dim}" Margin="0,0,0,6"
+                                   Text="Условия — C#-подобные выражения над DecisionPoint (decision) или HandPlayerFacts (hand); expression ссылается на plain-статы как code.cases / code.hits / code.sum. При сохранении стат компилируется; изменённый стат пересчитывается селективно." />
+                        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button Content="Проверить и прогнать по 1000 рукам" Click="StatTrial_Click" />
+                            <Button Style="{StaticResource AccentButton}" Content="Сохранить и пересчитать" Click="StatSave_Click" />
+                            <TextBlock x:Name="StatResultText" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <TextBox x:Name="StatJsonBox" FontFamily="Consolas" AcceptsReturn="True" AcceptsTab="True"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap" />
+                    </DockPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ── Настройки ───────────────────────────────────────── -->
+            <TabItem Header="Настройки" x:Name="SettingsTab">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="560" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <Grid x:Name="SettingsForm">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="200" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="Рум (скин WPN)" Margin="0,4" />
+                            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="SetRoom" Margin="0,2" Width="180" HorizontalAlignment="Left">
+                                <ComboBoxItem Content="POKERKING" />
+                                <ComboBoxItem Content="ACR" />
+                                <ComboBoxItem Content="BLACKCHIP" />
+                                <ComboBoxItem Content="TRUEPOKER" />
+                            </ComboBox>
+                            <TextBlock Grid.Row="1" Text="Строка подключения" Margin="0,4" />
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="SetConn" Margin="0,2" />
+                            <TextBlock Grid.Row="2" Text="Папка HH (авто-импорт)" Margin="0,4" />
+                            <TextBox Grid.Row="2" Grid.Column="1" x:Name="SetHhFolder" Margin="0,2" />
+                            <TextBlock Grid.Row="3" Text="Папка .data (рассадка)" Margin="0,4" />
+                            <TextBox Grid.Row="3" Grid.Column="1" x:Name="SetDataFolder" Margin="0,2" />
+                            <TextBlock Grid.Row="4" Text="Авто-импорт" Margin="0,4" />
+                            <CheckBox Grid.Row="4" Grid.Column="1" x:Name="SetAutoImport" Margin="0,4" />
+                            <TextBlock Grid.Row="5" Text="HUD" Margin="0,4" />
+                            <CheckBox Grid.Row="5" Grid.Column="1" x:Name="SetHud" Margin="0,4" />
+                            <TextBlock Grid.Row="6" Text="Процесс клиента" Margin="0,4" />
+                            <TextBox Grid.Row="6" Grid.Column="1" x:Name="SetProcess" Margin="0,2" />
+                            <TextBlock Grid.Row="7" Text="Класс окна стола" Margin="0,4" />
+                            <TextBox Grid.Row="7" Grid.Column="1" x:Name="SetWindowClass" Margin="0,2" />
+                            <TextBlock Grid.Row="8" Text="Сдвиг мест .data → HH" Margin="0,4" />
+                            <TextBox Grid.Row="8" Grid.Column="1" x:Name="SetSeatOffset" Margin="0,2" Width="60" HorizontalAlignment="Left" />
+                            <TextBlock Grid.Row="9" Text="Статы HUD (кеш)" Margin="0,4" />
+                            <TextBox Grid.Row="9" Grid.Column="1" x:Name="SetCashStats" Margin="0,2" />
+                            <TextBlock Grid.Row="10" Text="Статы HUD (турниры)" Margin="0,4" />
+                            <TextBox Grid.Row="10" Grid.Column="1" x:Name="SetMttStats" Margin="0,2" />
+                            <TextBlock Grid.Row="11" Text="Прозрачность панелей" Margin="0,4" />
+                            <StackPanel Grid.Row="11" Grid.Column="1" Orientation="Horizontal">
+                                <TextBox x:Name="SetOpacity" Margin="0,2" Width="60" />
+                                <TextBlock Text="Попапы:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="16,0,6,0" />
+                                <ComboBox x:Name="SetPopupTrigger" Width="150" SelectionChanged="PopupTrigger_Changed">
+                                    <ComboBoxItem Content="по наведению" />
+                                    <ComboBoxItem Content="по клику" />
+                                </ComboBox>
+                                <TextBlock x:Name="SetHoverDelayLabel" Text="через, мс" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="8,0,6,0" />
+                                <TextBox x:Name="SetHoverDelay" Width="50" Margin="0,2" />
+                                <TextBlock x:Name="SetHoverHideLabel" Text="скрыть через, мс" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="8,0,6,0" />
+                                <TextBox x:Name="SetHoverHide" Width="50" Margin="0,2" />
+                                <TextBlock Text="HUD вкл/выкл:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="16,0,6,0" />
+                                <TextBox x:Name="SetHotkey" Width="90" Margin="0,2" />
+                            </StackPanel>
+                            <TextBlock Grid.Row="12" Text="Разрыв сессии, мин" Margin="0,4" />
+                            <StackPanel Grid.Row="12" Grid.Column="1" Orientation="Horizontal">
+                                <TextBox x:Name="SetSessionGap" Margin="0,2" Width="60" />
+                                <TextBlock Text="Автобэкап раз в, дней (0 — выкл.):" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="16,0,6,0" />
+                                <TextBox x:Name="SetBackupDays" Width="40" Margin="0,2" />
+                                <TextBlock Text="хранить копий:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="8,0,6,0" />
+                                <TextBox x:Name="SetKeepBackups" Width="40" Margin="0,2" />
+                            </StackPanel>
+                            <StackPanel Grid.Row="13" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,10,0,0">
+                                <Button Style="{StaticResource AccentButton}" Content="Сохранить и перезапустить подсистемы" Click="SettingsSave_Click" />
+                                <Button Content="Бэкап БД (pg_dump)" Click="Backup_Click" />
+                            </StackPanel>
+                            <TextBlock Grid.Row="14" Grid.ColumnSpan="2" x:Name="SettingsStatus" Margin="0,6,0,0" TextWrapping="Wrap" />
+                        </Grid>
+                    </ScrollViewer>
+                    <DockPanel Grid.Column="1" Margin="8,0,0,0">
+                        <TextBlock DockPanel.Dock="Top" Style="{StaticResource H}" Text="Журнал (Hud / Import / Db / Live)" />
+                        <ListBox x:Name="LogList" FontFamily="Consolas" FontSize="11" />
+                    </DockPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

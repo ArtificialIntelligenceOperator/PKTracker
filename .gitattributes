@@ -1,0 +1,14 @@
+# Нормализация переносов строк: в репозитории LF, в рабочей копии — родные для ОС.
+* text=auto
+
+*.cs      text diff=csharp
+*.xaml    text
+*.sql     text
+*.md      text
+*.json    text
+*.ps1     text eol=crlf
+*.bat     text eol=crlf
+
+*.png     binary
+*.ico     binary
+*.zip     binary

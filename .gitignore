@@ -1,0 +1,28 @@
+# Сборка
+bin/
+obj/
+.vs/
+*.user
+TestResults/
+
+# ЛИЧНЫЕ ДАННЫЕ — в репозиторий не попадают ни при каких условиях:
+# в файлах истории рук есть ники других игроков, а обмен базами запрещён правилами румов
+handHistory/
+*.ots
+HH*.txt
+*.data
+# ...но не слой данных: git на Windows не различает регистр, и «*.data» совпадает
+# с каталогом src/PKTracker.Data — без этой строки из репозитория молча выпадают
+# миграции, импортёр и репозитории, и проект не собирается.
+!src/PKTracker.Data/
+*.dump
+settings.json
+settings.local.json
+mcp_salt.bin
+hud_layout.json
+*.log
+logs/
+
+# Релизы publish.ps1
+artifacts/
+*.zip

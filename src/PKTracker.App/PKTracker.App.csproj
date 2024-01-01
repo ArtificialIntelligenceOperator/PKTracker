@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>PKTracker</AssemblyName>
+    <ApplicationIcon>PKTracker.ico</ApplicationIcon>
+    <RootNamespace>PKTracker.App</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF и WinForms (только NotifyIcon) — убираем конфликтующие глобальные using -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Иконка окна и ярлыка; перерисовывается tools\Build-Icon.ps1 -->
+    <Resource Include="PKTracker.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PKTracker.Core\PKTracker.Core.csproj" />
+    <ProjectReference Include="..\PKTracker.Parsers\PKTracker.Parsers.csproj" />
+    <ProjectReference Include="..\PKTracker.Engine\PKTracker.Engine.csproj" />
+    <ProjectReference Include="..\PKTracker.Data\PKTracker.Data.csproj" />
+    <ProjectReference Include="..\PKTracker.Tournaments\PKTracker.Tournaments.csproj" />
+    <ProjectReference Include="..\PKTracker.Live\PKTracker.Live.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ScottPlot.WPF" Version="5.1.59" />
+  </ItemGroup>
+
+</Project>

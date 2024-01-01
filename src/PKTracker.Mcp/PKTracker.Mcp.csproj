@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>pktracker-mcp</AssemblyName>
+    <RootNamespace>PKTracker.Mcp</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Документация отдаётся агенту как MCP-ресурсы -->
+    <EmbeddedResource Include="..\..\docs\STATS.md" LogicalName="STATS.md" />
+    <EmbeddedResource Include="..\..\docs\DATABASE.md" LogicalName="DATABASE.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PKTracker.Core\PKTracker.Core.csproj" />
+    <ProjectReference Include="..\PKTracker.Engine\PKTracker.Engine.csproj" />
+    <ProjectReference Include="..\PKTracker.Parsers\PKTracker.Parsers.csproj" />
+    <ProjectReference Include="..\PKTracker.Data\PKTracker.Data.csproj" />
+    <ProjectReference Include="..\PKTracker.Tournaments\PKTracker.Tournaments.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+  </ItemGroup>
+
+</Project>

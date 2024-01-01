@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Migrations\*.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PKTracker.Core\PKTracker.Core.csproj" />
+    <ProjectReference Include="..\PKTracker.Engine\PKTracker.Engine.csproj" />
+    <ProjectReference Include="..\PKTracker.Parsers\PKTracker.Parsers.csproj" />
+    <ProjectReference Include="..\PKTracker.Tournaments\PKTracker.Tournaments.csproj" />
+  </ItemGroup>
+
+</Project>

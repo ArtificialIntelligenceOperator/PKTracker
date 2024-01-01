@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\PKTracker.Core\PKTracker.Core.csproj" />
+    <ProjectReference Include="..\PKTracker.Parsers\PKTracker.Parsers.csproj" />
+    <ProjectReference Include="..\PKTracker.Engine\PKTracker.Engine.csproj" />
+    <ProjectReference Include="..\PKTracker.Data\PKTracker.Data.csproj" />
+    <ProjectReference Include="..\PKTracker.Tournaments\PKTracker.Tournaments.csproj" />
+    <ProjectReference Include="..\PKTracker.Live\PKTracker.Live.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
