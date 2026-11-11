@@ -258,7 +258,6 @@ public sealed class StatRebuilder(TrackerDb db)
     public async Task FullRebuildAsync(IReadOnlyList<CompiledStat> stats, IEnumerable<string> heroes, IProgress<RebuildProgress>? progress = null, CancellationToken ct = default)
     {
         var plain = stats.Where(s => s.Scope != StatScope.Expression && s.StatId > 0).ToList();
-        var heroSet = new HashSet<string>(heroes, StringComparer.Ordinal);
         // В базе могут лежать раздачи нескольких румов (рум в настройках меняли): текст каждой разбирает
         // парсер её рума, а не активного — иначе чужой формат обрывал бы ребилд на середине.
         var parsers = new Dictionary<string, PKTracker.Core.Abstractions.IHandHistoryParser>(StringComparer.OrdinalIgnoreCase);
@@ -270,6 +269,18 @@ public sealed class StatRebuilder(TrackerDb db)
         await using var conn = await db.Import.OpenConnectionAsync(ct);
         long max = await MaxHandPkAsync(conn, ct);
 
+        // Ники Hero и игроки принадлежат руму: один и тот же ник в двух румах — разные люди. Раньше и те,
+        // и другие брались только у активного рума, и раздачи остальных румов после ребилда оставались
+        // без игроков (а значит, и без статистики).
+        var heroesByRoom = new Dictionary<short, HashSet<string>> { [db.RoomId] = new HashSet<string>(heroes, StringComparer.Ordinal) };
+        await using (var cmd = new NpgsqlCommand("SELECT room_id, nickname FROM hero_account", conn))
+        await using (var r = await cmd.ExecuteReaderAsync(ct))
+            while (await r.ReadAsync(ct))
+            {
+                if (!heroesByRoom.TryGetValue(r.GetInt16(0), out var set)) heroesByRoom[r.GetInt16(0)] = set = new HashSet<string>(StringComparer.Ordinal);
+                set.Add(r.GetString(1));
+            }
+
         await Exec(conn, null, """
             DROP TABLE IF EXISTS player_stat_agg_shadow;
             CREATE TABLE player_stat_agg_shadow (LIKE player_stat_agg INCLUDING ALL);
@@ -279,8 +290,8 @@ public sealed class StatRebuilder(TrackerDb db)
         for (long from = 0; from < max; from += Batch)
         {
             long to = Math.Min(from + Batch, max);
-            var batch = new List<(long Pk, ParsedHand Hand, HandContext Ctx)>();
-            await using (var cmd = new NpgsqlCommand("SELECT r.hand_pk, r.body, r.source_file, r.file_offset, rm.code FROM hand_raw r JOIN hands h ON h.hand_pk = r.hand_pk JOIN room rm ON rm.room_id = h.room_id WHERE r.hand_pk > $1 AND r.hand_pk <= $2 ORDER BY r.hand_pk", conn))
+            var batch = new List<(long Pk, short Room, ParsedHand Hand, HandContext Ctx)>();
+            await using (var cmd = new NpgsqlCommand("SELECT r.hand_pk, r.body, r.source_file, r.file_offset, rm.code, h.room_id FROM hand_raw r JOIN hands h ON h.hand_pk = r.hand_pk JOIN room rm ON rm.room_id = h.room_id WHERE r.hand_pk > $1 AND r.hand_pk <= $2 ORDER BY r.hand_pk", conn))
             {
                 cmd.Parameters.AddWithValue(from);
                 cmd.Parameters.AddWithValue(to);
@@ -291,8 +302,11 @@ public sealed class StatRebuilder(TrackerDb db)
                     var file = r.GetString(2);
                     var h = ParseOne(ParserOf(r.GetString(4)), text, file);
                     h.FileOffset = r.GetInt64(3);
-                    foreach (var s in h.Seats) if (heroSet.Contains(s.Name)) s.IsHero = true;
-                    batch.Add((r.GetInt64(0), h, HandContextBuilder.Build(h, computeEv: true)));
+                    short room = r.GetInt16(5);
+                    if (heroesByRoom.TryGetValue(room, out var heroSet))
+                        foreach (var s in h.Seats) if (heroSet.Contains(s.Name)) s.IsHero = true;
+                    // Как и при импорте: All-in EV считается только там, где за столом сидит Hero.
+                    batch.Add((r.GetInt64(0), room, h, HandContextBuilder.Build(h, computeEv: h.Seats.Any(s => s.IsHero))));
                 }
             }
             if (batch.Count == 0) continue;
@@ -307,20 +321,31 @@ public sealed class StatRebuilder(TrackerDb db)
             }
 
             var names = batch.SelectMany(b => b.Hand.Seats.Select(s => s.Name)).Distinct().ToArray();
-            var players = new Dictionary<string, long>(StringComparer.Ordinal);
-            await using (var cmd = new NpgsqlCommand("SELECT nickname, coalesce(canonical_id, player_id) FROM player WHERE room_id = $1 AND nickname = ANY($2)", conn, tx))
+            var playersByRoom = new Dictionary<short, Dictionary<string, long>>();
+            await using (var cmd = new NpgsqlCommand("SELECT room_id, nickname, coalesce(canonical_id, player_id) FROM player WHERE room_id = ANY($1) AND nickname = ANY($2)", conn, tx))
             {
-                cmd.Parameters.AddWithValue(db.RoomId);
+                cmd.Parameters.AddWithValue(batch.Select(b => b.Room).Distinct().ToArray());
                 cmd.Parameters.AddWithValue(names);
                 await using var r = await cmd.ExecuteReaderAsync(ct);
-                while (await r.ReadAsync(ct)) players[r.GetString(0)] = r.GetInt64(1);
+                while (await r.ReadAsync(ct))
+                {
+                    if (!playersByRoom.TryGetValue(r.GetInt16(0), out var map)) playersByRoom[r.GetInt16(0)] = map = new Dictionary<string, long>(StringComparer.Ordinal);
+                    map[r.GetString(1)] = r.GetInt64(2);
+                }
             }
 
-            var list = batch.Select(b => (b.Hand, b.Ctx)).ToList();
-            await HandImporter.CopyPlayersAsync(conn, list, pks, players, ct);
-            await HandImporter.CopyActionsAsync(conn, list, pks, ct);
-            await HandImporter.CopyBoardsAsync(conn, list, pks, ct);
-            await HandImporter.CopyDecisionsAsync(conn, list, pks, players, ct);
+            var agg = new StatAggregator(plain);
+            foreach (var group in batch.GroupBy(b => b.Room))
+            {
+                var players = playersByRoom.GetValueOrDefault(group.Key) ?? new Dictionary<string, long>(StringComparer.Ordinal);
+                var list = group.Select(b => (b.Hand, b.Ctx)).ToList();
+                var groupPks = group.Select(b => b.Pk).ToArray();
+                await HandImporter.CopyPlayersAsync(conn, list, groupPks, players, ct);
+                await HandImporter.CopyActionsAsync(conn, list, groupPks, ct);
+                await HandImporter.CopyBoardsAsync(conn, list, groupPks, ct);
+                await HandImporter.CopyDecisionsAsync(conn, list, groupPks, players, ct);
+                foreach (var (_, _, h, ctx) in group) agg.Add(ctx, HandImporter.SeatIds(h, ctx, players));
+            }
 
             await using (var upd = new NpgsqlCommand("UPDATE hands SET context_version = $1 WHERE hand_pk = ANY($2)", conn, tx))
             {
@@ -329,8 +354,6 @@ public sealed class StatRebuilder(TrackerDb db)
                 await upd.ExecuteNonQueryAsync(ct);
             }
 
-            var agg = new StatAggregator(plain);
-            foreach (var (_, h, ctx) in batch) agg.Add(ctx, HandImporter.SeatIds(h, ctx, players));
             await AggWriter.UpsertAsync(conn, tx, agg, ct, "player_stat_agg_shadow");
             await tx.CommitAsync(ct);
             progress?.Report(new RebuildProgress("full", to, max));

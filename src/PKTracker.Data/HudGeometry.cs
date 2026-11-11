@@ -29,6 +29,11 @@ public static class HudGeometry
             return t.TableName.Length > 0 && Regex.IsMatch(title, $@"(^|\W){Regex.Escape(t.TableName)}(\W|$)", RegexOptions.IgnoreCase);
 
         var tableNo = t.ExternalTableId.TrimStart('T');
+        // Часть румов записывает стол в истории как «<id турнира> <номер стола>» (PokerStars: Table '40000001 1'),
+        // а в заголовке окна эти числа стоят порознь: «Tournament 40000001 Table 1». Номер стола — то, что после id;
+        // без этого такое окно не совпадало ни с одним столом, и HUD над ним не появлялся.
+        if (t.TournamentId is { } own && tableNo.StartsWith(own + " ", StringComparison.Ordinal))
+            tableNo = tableNo[(own.ToString().Length + 1)..].Trim();
         bool tableOk = Regex.IsMatch(title, $@"(Table|Стол|#)\s*'?{Regex.Escape(tableNo)}(\D|$)", RegexOptions.IgnoreCase);
         bool idOk = t.TournamentId is { } tid && title.Contains(tid.ToString());
         int hash = t.TableName.LastIndexOf(" #", StringComparison.Ordinal);

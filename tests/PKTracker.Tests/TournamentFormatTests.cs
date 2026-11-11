@@ -13,6 +13,50 @@ public class TournamentFormatTests
         GameKind? kind = null, int? maxSeats = null, bool ko = false, short koKind = 0) =>
         new(1, null, DateTime.UtcNow, 0, buyIn, fee, currency, 1, null, 0, 0, 0, players, kind, maxSeats, ko, koKind);
 
+    private static TournamentRow Named(string? name, long? buyIn = null, string? currency = "CHP") =>
+        new(1, name, DateTime.UtcNow, 10, buyIn, buyIn is null ? null : 0, currency, 0, null, 0, 0, 0, null, GameKind.Mtt, 6);
+
+    [Fact]
+    public void BuyInIsReadFromNameWhenSummaryIsMissing()
+    {
+        // Итогов турнира нет, но рум написал стоимость входа в заголовке раздачи — формат уже не «бай-ин ?»
+        var row = Named("$5.00+$0.50 USD").WithBuyInFromName();
+        Assert.Equal(500, row.BuyIn);
+        Assert.Equal(50, row.Fee);
+        Assert.Equal("USD", row.Currency);
+        Assert.Equal("$5.50 MTT 6-max", row.FormatLabel);
+        // Денежного результата от этого не появляется: входов по итогам нет
+        Assert.False(row.HasResult);
+
+        // Нокаут: баунти + призовой фонд + сбор; сбор — последнее слагаемое
+        var ko = Named("$4.50+$4.50+$1.00 USD").WithBuyInFromName();
+        Assert.Equal(900, ko.BuyIn);
+        Assert.Equal(100, ko.Fee);
+
+        // Валюта в названии не указана — остаётся прежняя
+        Assert.Equal("EUR", Named("9+1", currency: "EUR").WithBuyInFromName().Currency);
+    }
+
+    [Fact]
+    public void BuyInFromNameNeverOverridesSummaryAndIgnoresOrdinaryNames()
+    {
+        // Бай-ин из итогов турнира точнее заголовка — его не трогаем
+        Assert.Equal(700, Named("$5.00+$0.50 USD", buyIn: 700, currency: "USD").WithBuyInFromName().BuyIn);
+        // Сумма в середине названия — не стоимость входа
+        Assert.Null(Named("Sunday $109 + bounty Special").WithBuyInFromName().BuyIn);
+        Assert.Null(Named("The Venom $2,650 Main Event").WithBuyInFromName().BuyIn);
+        Assert.Null(Named(null).WithBuyInFromName().BuyIn);
+        Assert.Equal("бай-ин ? MTT 6-max", Named("Freeroll").WithBuyInFromName().FormatLabel);
+    }
+
+    [Fact]
+    public void PositionsAreOrderedAsTheyActAtTheTable()
+    {
+        var order = new[] { Position.BB, Position.BTN, Position.UTG, Position.SB, Position.CO, Position.None, Position.HJ }
+            .OrderBy(PositionOrder.AtTable).ToArray();
+        Assert.Equal(new[] { Position.UTG, Position.HJ, Position.CO, Position.BTN, Position.SB, Position.BB, Position.None }, order);
+    }
+
     [Fact]
     public void BuyInIsCostOfOneEntry()
     {

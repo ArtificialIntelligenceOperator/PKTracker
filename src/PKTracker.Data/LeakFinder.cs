@@ -25,6 +25,9 @@ public static class LeakFinder
         {
             // Суммы (net/EV) и служебные счётчики с пулом не сравниваются
             if (st.Definition.Value != null || Skip.Contains(st.Code)) continue;
+            // Счётчики («Раздач», «Hands»): их значение — число случаев. Оно зависит от того, сколько сыграно,
+            // а не от манеры игры, и против пула из тысяч игроков всегда выглядит «сильным отклонением».
+            if (st.Scope != StatScope.Expression && !st.Definition.Format.Percent) continue;
             var (hv, hn) = hero.Evaluate(st.Code);
             var (pv, pn) = pool.Evaluate(st.Code);
             if (hv == null || pv == null) continue;
@@ -38,11 +41,14 @@ public static class LeakFinder
                 score = Math.Abs(diff) / se;
             }
             else score = Math.Abs(diff) / Math.Max(Math.Abs(pv.Value), 0.1) * 4;
-            string verdict = hn < Math.Max(st.Definition.MinSample, 20) ? "мало данных"
+            // Мало случаев у Hero или у пула — вывода нет, и строка не должна всплывать наверх списка:
+            // «90% против 0%» по трём случаям пула выглядит самым большим отклонением, хотя это шум.
+            bool thin = hn < Math.Max(st.Definition.MinSample, 20) || pn < Math.Max(st.Definition.MinSample, 20);
+            string verdict = thin ? "мало данных"
                 : score >= 3 ? (diff > 0 ? "▲ сильно выше пула" : "▼ сильно ниже пула")
                 : score >= 2 ? (diff > 0 ? "△ выше пула" : "▽ ниже пула")
                 : "в норме";
-            rows.Add(new LeakRow(st.Code, st.Definition.Title, hv.Value, hn, pv.Value, pn, diff, hn < 20 ? 0 : score, verdict, dec));
+            rows.Add(new LeakRow(st.Code, st.Definition.Title, hv.Value, hn, pv.Value, pn, diff, thin ? 0 : score, verdict, dec));
         }
         return rows.OrderByDescending(r => r.Score).ToList();
     }

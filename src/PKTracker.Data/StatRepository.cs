@@ -160,8 +160,51 @@ public sealed class StatRepository(TrackerDb db)
     }
 }
 
+/// <summary>Аккаунт пользователя в руме. В списке показывается как «ник — рум».</summary>
+public sealed record HeroAccount(string RoomCode, string Nickname)
+{
+    public string RoomTitle => PKTracker.Parsers.ParserRegistry.Room(RoomCode)?.Title ?? RoomCode;
+    public override string ToString() => $"{Nickname} — {RoomTitle}";
+}
+
 public sealed class HeroRepository(TrackerDb db)
 {
+    /// <summary>Аккаунты во всех румах: импорт раскладывает раздачи по румам сам, и ники нужны для каждого.</summary>
+    public async Task<List<HeroAccount>> ListAllAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.Import.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT r.code, h.nickname FROM hero_account h JOIN room r ON r.room_id = h.room_id ORDER BY r.code, h.nickname", conn);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        var list = new List<HeroAccount>();
+        while (await r.ReadAsync(ct)) list.Add(new HeroAccount(r.GetString(0), r.GetString(1)));
+        return list;
+    }
+
+    /// <summary>Добавить ник в рум по его коду. false — такого рума в базе нет.</summary>
+    public async Task<bool> AddForRoomAsync(string nickname, string roomCode, CancellationToken ct = default)
+    {
+        await using var conn = await db.Import.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand("""
+            WITH r AS (SELECT room_id FROM room WHERE code = $1),
+                 i AS (INSERT INTO hero_account (room_id, nickname) SELECT room_id, $2 FROM r ON CONFLICT DO NOTHING)
+            SELECT count(*) FROM r
+            """, conn);
+        cmd.Parameters.AddWithValue(roomCode.ToUpperInvariant());
+        cmd.Parameters.AddWithValue(nickname);
+        return (long)(await cmd.ExecuteScalarAsync(ct))! > 0;
+    }
+
+    public async Task RemoveForRoomAsync(string nickname, string roomCode, CancellationToken ct = default)
+    {
+        await using var conn = await db.Import.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "DELETE FROM hero_account WHERE nickname = $2 AND room_id = (SELECT room_id FROM room WHERE code = $1)", conn);
+        cmd.Parameters.AddWithValue(roomCode.ToUpperInvariant());
+        cmd.Parameters.AddWithValue(nickname);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     public async Task<List<string>> ListAsync(short? room = null, CancellationToken ct = default)
     {
         short roomId = room ?? db.RoomId;

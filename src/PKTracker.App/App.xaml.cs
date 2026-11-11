@@ -13,6 +13,29 @@ public partial class App : Application
 
     public AppServices Services { get; private set; } = null!;
 
+    public App() => UseUniformNumbers();
+
+    /// <summary>
+    /// Числа во всём окне пишутся одинаково: дробная часть через точку, разряды — как принято в системе («12 345»).
+    /// Иначе карточка, отформатированная в коде, показывала «12,34», а таблица рядом, через привязку, — «56.7».
+    /// Точка выбрана потому, что так пишут bb/100 и проценты все покерные программы и сам HUD. На разбор файлов
+    /// это не влияет: парсеры читают числа только с инвариантной культурой.
+    ///
+    /// Вызывается из конструктора, а не из OnStartup: тот — async, а культура, выставленная внутри async-метода,
+    /// живёт только в его контексте выполнения и до остального интерфейса не доходит.
+    /// </summary>
+    private static void UseUniformNumbers()
+    {
+        var culture = (System.Globalization.CultureInfo)System.Globalization.CultureInfo.CurrentCulture.Clone();
+        var nf = culture.NumberFormat;
+        // Где разряды разделяют точкой («1.234,5»), точка в роли десятичного знака дала бы «1.234.5».
+        if (nf.NumberGroupSeparator == ".") nf.NumberGroupSeparator = "\u00A0";
+        nf.NumberDecimalSeparator = nf.CurrencyDecimalSeparator = nf.PercentDecimalSeparator = ".";
+        nf.CurrencyGroupSeparator = nf.PercentGroupSeparator = nf.NumberGroupSeparator;
+        System.Globalization.CultureInfo.CurrentCulture = culture;
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture = culture;
+    }
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -50,6 +73,12 @@ public partial class App : Application
         // «--tab <название>» — открыть приложение сразу на нужной вкладке (ярлык на «Аналитика», проверка интерфейса).
         int ti = Array.IndexOf(e.Args, "--tab");
         if (ti >= 0 && ti + 1 < e.Args.Length) _main.SelectTab(e.Args[ti + 1]);
+
+        // «--import <путь> [путь…]» — открыть вкладку «Импорт» и сразу загрузить папку, файлы или архив:
+        // тот же путь, что у перетаскивания (ярлык «загрузить выгрузку», проверка интерфейса).
+        int ii = Array.IndexOf(e.Args, "--import");
+        if (ii >= 0 && ii + 1 < e.Args.Length)
+            _ = _main.ImportFromCommandLineAsync(e.Args.Skip(ii + 1).TakeWhile(a => !a.StartsWith("--", StringComparison.Ordinal)).ToList());
 
         // «--replay <номер раздачи>» — сразу открыть раздачу в реплеере (номер рума или внутренний hand_pk).
         int ri = Array.IndexOf(e.Args, "--replay");

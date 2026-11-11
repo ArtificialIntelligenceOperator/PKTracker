@@ -193,6 +193,14 @@ public static partial class HhText
     }
 
     /// <summary>
+    /// Номер турнира: число как есть, иначе — стабильный id из строки. Клоны формата PokerStars пишут номер
+    /// вида «916-1a5b8d2»; раньше такая шапка отклоняла раздачу целиком. Старший значащий бит выставлен,
+    /// чтобы id из строки не совпал с настоящим числовым номером другого турнира.
+    /// </summary>
+    public static long TournamentId(string s) =>
+        long.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out long id) ? id : StableId(s) | (1L << 62);
+
+    /// <summary>
     /// То же для рума, который пишет время в поясе компьютера игрока (888, iPoker): зону знает только пользователь,
     /// в тексте её нет. Не задана — UTC.
     /// </summary>

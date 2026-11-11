@@ -71,7 +71,10 @@ public sealed class StatDetailWindow : Window, IPinnable
         var close = new Button
         {
             Content = "✕", Width = 26, Height = 22, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-            Foreground = Res("TextDim"), Cursor = Cursors.Hand,
+            Foreground = Res("TextDim"), Cursor = Cursors.Hand, ToolTip = "Закрыть",
+            // Поля кнопки из темы (12 слева и справа) шире самой кнопки: крестику не оставалось места,
+            // и на его месте была видна только пустая рамка.
+            Padding = new Thickness(0), BorderBrush = Brushes.Transparent, Margin = new Thickness(0),
         };
         close.Click += (_, _) => Close();
 
@@ -184,14 +187,18 @@ public sealed class StatDetailWindow : Window, IPinnable
 
         // Вкладка на каждое действие, которое в этом споте вообще встречалось: «чем рейзил»,
         // «чем коллировал», «что сбрасывал» — рядом.
-        // За столом на румах со «статичным» HUD диапазоны по вскрытым картам запрещены (iPoker, Winamax, Stars):
-        // в реплеере и отчётах их показывать можно — это разбор после игры.
-        bool rangesBanned = _overlay && RoomHudPolicy.For(_host.Db.RoomCode).StaticOnly;
+        // За столом на румах со «статичным» HUD диапазоны по вскрытым картам запрещены (iPoker, Winamax, Stars, 888):
+        // в реплеере и отчётах их показывать можно — это разбор после игры. Исключение — PokerStars: там трекер
+        // обязан урезать то же самое и в реплеере, пока клиент рума открыт.
+        bool rangesBanned = RoomHudPolicy.For(_host.Db.RoomCode).RestrictedNow(_overlay);
         if (rangesBanned)
             tabs.Items.Add(Tab("Диапазоны", new TextBlock
             {
-                Text = "Диапазоны по вскрытым картам за столом скрыты: правила рума разрешают только числовой HUD. " +
-                       "Откройте этот стат из реплеера или вкладки «Игроки».",
+                Text = _overlay
+                    ? "Диапазоны, сила руки и разбивка по бордам за столом скрыты: правила рума разрешают только числовой HUD. " +
+                      "Откройте этот стат из реплеера или вкладки «Игроки» после игры."
+                    : "Диапазоны, сила руки и разбивка по бордам скрыты, пока запущен клиент рума: PokerStars требует, " +
+                      "чтобы трекер урезал их и в реплеере при открытом клиенте. Закройте клиент — и они появятся.",
                 TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8), Opacity = 0.8,
             }));
         // Первая вкладка — то, ради чего стат наводят мышью: с какими руками это делалось (матрица 13×13)
@@ -228,7 +235,10 @@ public sealed class StatDetailWindow : Window, IPinnable
             // Без вскрытых рук первой вкладки нет — сила руки остаётся отдельной (пустой список тоже ответ).
             if (!rangesBanned && data.KnownHands == 0)
                 tabs.Items.Add(Tab("Сила руки", Counts("Сила руки на улице (только известные карты)", data.HandStrength)));
-            tabs.Items.Add(Tab("Борды", Counts("Текстура борда (доля от срабатываний)", data.Boards)));
+            // Разбивка по текстуре борда — это стат, «разделённый по значениям карт»: Stars запрещает такое в HUD прямо
+            // («агрессия — можно, агрессия на флеш-дро бордах — нельзя»), остальные статичные румы — через запрет статов по картам.
+            if (!rangesBanned)
+                tabs.Items.Add(Tab("Борды", Counts("Текстура борда (доля от срабатываний)", data.Boards)));
         }
         tabs.Items.Add(Tab("Руки", HandsList(data, showCards: !rangesBanned)));
         return tabs;

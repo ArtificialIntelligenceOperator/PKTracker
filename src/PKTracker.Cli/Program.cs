@@ -34,7 +34,9 @@ public static class Program
             PKTracker CLI
               verify <dir> [hero]                      парсинг + инварианты денег/позиций на корпусе
               db init  --conn <cs>                     применить миграции
-              import   --conn <cs> --hero <nick> <dir> ручной импорт HH (*.txt) и итогов (*.ots)
+              db list | db create <имя> | db drop <имя> --yes   базы на сервере: список, новая, удаление
+              import   --conn <cs> [--hero <ник|РУМ:ник>,…] [--observed] [--gg] <папка|файл|архив>…
+                                                       ручной импорт: папки, файлы и архивы .zip/.rar/.7z
               stats    --conn <cs> <nick> [cash|mtt]   статы игрока из агрегатов (как HUD)
               rebuild  --conn <cs> [--full]            ребилд агрегатов (селективный / полный из hand_raw)
               check-agg --conn <cs>                    сверка агрегатов с SQL по hand_decisions (§15.7)

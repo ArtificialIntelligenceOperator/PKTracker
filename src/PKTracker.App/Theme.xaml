@@ -29,6 +29,7 @@
     <SolidColorBrush x:Key="Positive" Color="#3ECF8E" />
     <SolidColorBrush x:Key="Negative" Color="#F0708C" />
 
+    <infra:GroupedNumberConverter x:Key="Num" />
     <infra:SignToBrushConverter x:Key="SignBrush" Positive="{StaticResource Positive}" Negative="{StaticResource Negative}" Neutral="{StaticResource Text}" />
 
     <!-- ══ Текст ═════════════════════════════════════════════════════════════════ -->
@@ -442,7 +443,7 @@
                                 <TabPanel IsItemsHost="True" />
                             </DockPanel>
                         </Border>
-                        <ContentPresenter ContentSource="SelectedContent" Margin="14,12,14,10" />
+                        <ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent" Margin="14,12,14,10" />
                     </DockPanel>
                 </ControlTemplate>
             </Setter.Value>

@@ -21,7 +21,8 @@ namespace PKTracker.App.Hud;
 public sealed class SessionWidget : Window
 {
     private readonly AppServices _svc;
-    private readonly TextBlock _title = new() { FontSize = 11, Opacity = 0.75 };
+    // Справа оставлено место под крестик: при длинном заголовке он ложился на последние цифры («столов 2×2»).
+    private readonly TextBlock _title = new() { FontSize = 11, Opacity = 0.75, Margin = new System.Windows.Thickness(0, 0, 16, 0) };
     private readonly TextBlock _net = new() { FontSize = 22, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 1, 0, 1) };
     private readonly TextBlock _detail = new() { FontSize = 11, Opacity = 0.85 };
     private readonly Polyline _line = new() { StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };

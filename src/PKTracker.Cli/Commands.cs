@@ -23,15 +23,51 @@ internal static class Commands
                 Console.WriteLine($"Схема: версия {Migrator.LatestVersion}. Статов активно: {host.Stats.Count}.");
                 return 0;
             }
+            case "db" when opts.Positional.FirstOrDefault() == "list":
+            {
+                var current = DatabaseCatalog.Current(cs);
+                foreach (var d in await DatabaseCatalog.ListAsync(cs))
+                    Console.WriteLine($"{(d.Name == current ? "*" : " ")} {d}{(d.IsTracker ? "" : "  (не база PKTracker)")}");
+                return 0;
+            }
+            case "db" when opts.Positional.FirstOrDefault() == "create":
+            {
+                var name = opts.Positional.Skip(1).FirstOrDefault() ?? throw new ArgumentException("Не указано имя базы");
+                await DatabaseCatalog.CreateAsync(cs, name);
+                // Схему создаём сразу: пустая база без таблиц выглядела бы в списке как чужая.
+                await using var host = await TrackerHost.StartAsync(DatabaseCatalog.WithDatabase(cs, DatabaseCatalog.Normalize(name, out _)),
+                    opts.Get("room") ?? settings.RoomCode);
+                Console.WriteLine($"База «{DatabaseCatalog.Normalize(name, out _)}» создана, схема v{Migrator.LatestVersion}.");
+                return 0;
+            }
+            case "db" when opts.Positional.FirstOrDefault() == "drop":
+            {
+                var name = opts.Positional.Skip(1).FirstOrDefault() ?? throw new ArgumentException("Не указано имя базы");
+                // Консоль не переспрашивает, поэтому имя нужно повторить ключом: одна опечатка не должна стоить базы.
+                if (!opts.Has("yes")) throw new ArgumentException($"Удаление необратимо. Подтвердите ключом: db drop {name} --yes");
+                await DatabaseCatalog.DropAsync(cs, name);
+                Console.WriteLine($"База «{name}» удалена.");
+                return 0;
+            }
             case "import":
             {
-                var dir = opts.Positional.FirstOrDefault() ?? settings.HandHistoryFolder ?? throw new ArgumentException("Не указана папка");
+                var paths = opts.Positional.Count > 0 ? opts.Positional
+                    : new List<string> { settings.HandHistoryFolder ?? throw new ArgumentException("Не указано, что импортировать: папка, файлы или архив") };
                 await using var host = await TrackerHost.StartAsync(cs, opts.Get("room") ?? settings.RoomCode);
-                if (opts.Get("hero") is { } hero) { await host.Heroes.AddAsync(hero); await host.ReloadAsync(); }
-                if (host.HeroNames.Count == 0) throw new InvalidOperationException("Не задан ни один Hero (--hero <ник>): импорт чужих рук запрещён правилами рума.");
+                // «--hero ник» — аккаунт активного рума; «--hero РУМ:ник» — аккаунт другого рума (для выгрузок с несколькими румами).
+                foreach (var hero in (opts.Get("hero") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    int colon = hero.IndexOf(':');
+                    if (colon > 0 && PKTracker.Parsers.ParserRegistry.Room(hero[..colon]) != null)
+                        await host.Heroes.AddForRoomAsync(hero[(colon + 1)..], hero[..colon]);
+                    else await host.Heroes.AddAsync(hero);
+                }
+                await host.ReloadAsync();
                 var progress = new Progress<ImportProgress>(p =>
                     Console.Write($"\r  файлов {p.FilesDone}/{p.FilesTotal}  рук {p.Hands}  импорт {p.Imported}  дубли {p.Duplicates}  ошибки {p.Errors}  {p.HandsPerSecond:F0} рук/с   "));
-                var rep = await host.CreateFileImporter().ImportFolderAsync(dir, progress);
+                // «--observed» — принимать и раздачи без Hero за столом (на свой риск: правила румов это запрещают).
+                // «--gg» — принимать раздачи сети GG (на свой риск: её политика запрещает сторонний импорт истории).
+                var rep = await host.CreateFileImporter(opts.Has("observed"), opts.Has("gg")).ImportPathsAsync(paths, progress);
                 Console.WriteLine();
                 Console.WriteLine($"""
                     Файлов: {rep.Files}  Раздач: {rep.Hands}
@@ -39,6 +75,9 @@ internal static class Commands
                     Турниров (.ots): {rep.Tournaments}  Время: {rep.Elapsed.TotalSeconds:F1} c
                     """);
                 foreach (var m in rep.Messages.Take(20)) Console.WriteLine("  " + m);
+                if (rep.UnknownHeroes.Count > 0)
+                    Console.WriteLine("  Свои аккаунты добавьте ключом: --hero " +
+                                      string.Join(",", rep.UnknownHeroes.Take(4).Select(u => $"{u.RoomCode}:{u.Nickname}")));
                 return rep.Errors == 0 ? 0 : 1;
             }
             case "stats":

@@ -11,19 +11,57 @@ public sealed record ImportProgress(int FilesDone, int FilesTotal, int Hands, in
     int RejectedFiles, double HandsPerSecond, TimeSpan Elapsed, TimeSpan? Eta, string? CurrentFile);
 
 public sealed record ImportReport(int Files, int Hands, int Imported, int Duplicates, int Errors, int RejectedFiles,
-    int Tournaments, TimeSpan Elapsed, IReadOnlyCollection<long> AffectedPlayers, IReadOnlyList<string> Messages);
+    int Tournaments, TimeSpan Elapsed, IReadOnlyCollection<long> AffectedPlayers, IReadOnlyList<string> Messages)
+{
+    /// <summary>Ники, чьи карты розданы в отклонённых файлах, но которых нет среди аккаунтов Hero.</summary>
+    public IReadOnlyList<UnknownHero> UnknownHeroes { get; init; } = Array.Empty<UnknownHero>();
 
-/// <summary>Ручной импорт папки (§6.1): HH*.txt и *.ots, пачками, с прогрессом и отменой.</summary>
+    /// <summary>Файлы без карманных карт какого-либо игрока — наблюдаемые или купленные раздачи.</summary>
+    public int ObservedFiles { get; init; }
+
+    /// <summary>
+    /// Файлы сети WPN, которые не удалось отнести к руму: скины сети по тексту неразличимы, а ник владельца
+    /// файлов не заведён ни для одного из них. Рум здесь не определён — его выбирает пользователь.
+    /// </summary>
+    public UnknownHero? UnknownWpn { get; init; }
+
+    /// <summary>Раздачи из принятых файлов, где Hero не сидел за столом (не загружены и ошибкой не считаются).</summary>
+    public int NotOwnHands { get; init; }
+}
+
+/// <summary>
+/// Игрок, которому в файлах розданы карты (то есть файлы записаны его клиентом), но не заведённый как Hero.
+/// Интерфейс по этому списку спрашивает, не аккаунт ли это пользователя, — вместо молчаливого отказа.
+/// </summary>
+public sealed record UnknownHero(string RoomCode, string RoomTitle, string Nickname, int Files, int Hands);
+
+/// <summary>
+/// Ручной импорт (§6.1): папки, отдельные файлы и архивы; пачками, с прогрессом и отменой.
+///
+/// Рум раздачи определяется по содержимому файла, поэтому выгрузку с несколькими румами можно загрузить
+/// за один раз: у каждого рума свой <see cref="HandImporter"/> со своими никами Hero. Исключение — скины
+/// сети WPN: их текст неразличим, и такие файлы принимаются только когда активным выбран скин WPN.
+/// </summary>
 public sealed class FileImporter
 {
     private readonly TrackerDb _db;
     private readonly HandImporter _hands;
+    private readonly Func<RoomInfo, CancellationToken, Task<HandImporter?>>? _forRoom;
     public int BatchSize { get; init; } = 5000;
 
-    public FileImporter(TrackerDb db, HandImporter hands)
+    /// <summary>
+    /// Принимать раздачи румов, чьи правила запрещают сторонний импорт истории (<see cref="RoomHudPolicy.ImportNeedsOptIn"/> —
+    /// сеть GG). Выключено по умолчанию, включает сам игрок на свой риск: <see cref="TrackerSettings.ImportGgHands"/>,
+    /// в консоли <c>import --gg</c>. При запущенном клиенте такого рума импорт не идёт в любом случае.
+    /// </summary>
+    public bool AllowRestrictedRooms { get; init; }
+
+    /// <param name="forRoom">Импортёр для рума, отличного от активного (его id и ники Hero); null — другие румы пропускаются.</param>
+    public FileImporter(TrackerDb db, HandImporter hands, Func<RoomInfo, CancellationToken, Task<HandImporter?>>? forRoom = null)
     {
         _db = db;
         _hands = hands;
+        _forRoom = forRoom;
     }
 
     /// <summary>Читает файл, который клиент может держать открытым (§15.1).</summary>
@@ -36,43 +74,64 @@ public sealed class FileImporter
         return ms.ToArray();
     }
 
-    public async Task<ImportReport> ImportFolderAsync(string folder, IProgress<ImportProgress>? progress = null, CancellationToken ct = default)
-    {
-        // Формат определяется по содержимому файла, а не по имени: у румов разные соглашения об именах,
-        // а файлы, которые не похожи ни на один формат, просто пропускаются при разборе.
-        var hh = Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories)
-            .Where(ParserRegistry.LooksLikeHistoryFile).OrderBy(f => f).ToList();
-        var ots = Directory.EnumerateFiles(folder, "*.ots", SearchOption.AllDirectories).OrderBy(f => f).ToList();
-        return await ImportFilesAsync(hh, ots, progress, ct);
-    }
+    public Task<ImportReport> ImportFolderAsync(string folder, IProgress<ImportProgress>? progress = null, CancellationToken ct = default) =>
+        ImportPathsAsync(new[] { folder }, progress, ct);
 
     /// <summary>Только итоги турниров (*.ots) — без раздач: место, призы, баунти, размер поля (§0.5).</summary>
-    public async Task<ImportReport> ImportTournamentsFolderAsync(string folder, IProgress<ImportProgress>? progress = null, CancellationToken ct = default)
+    public Task<ImportReport> ImportTournamentsFolderAsync(string folder, IProgress<ImportProgress>? progress = null, CancellationToken ct = default) =>
+        ImportUnitsAsync(ImportSources.Expand(new[] { folder }, new List<string>()).Where(u => u.Kind == ImportKind.Summary).ToList(),
+            new List<string>(), progress, ct);
+
+    public Task<ImportReport> ImportFilesAsync(IReadOnlyList<string> hhFiles, IReadOnlyList<string> otsFiles,
+        IProgress<ImportProgress>? progress = null, CancellationToken ct = default) =>
+        ImportUnitsAsync(hhFiles.Select(f => new ImportUnit(f, ImportKind.History))
+            .Concat(otsFiles.Select(f => new ImportUnit(f, ImportKind.Summary))).ToList(), new List<string>(), progress, ct);
+
+    /// <summary>
+    /// Импорт всего, что указал пользователь: папки (рекурсивно), файлы истории, итоги турниров и архивы
+    /// .zip / .rar / .7z — в любом сочетании. Формат каждого файла определяется по содержимому, а не по имени.
+    /// </summary>
+    public Task<ImportReport> ImportPathsAsync(IEnumerable<string> paths, IProgress<ImportProgress>? progress = null, CancellationToken ct = default)
     {
-        var ots = Directory.EnumerateFiles(folder, "*.ots", SearchOption.AllDirectories).OrderBy(f => f).ToList();
-        return await ImportFilesAsync(Array.Empty<string>(), ots, progress, ct);
+        var messages = new List<string>();
+        return ImportUnitsAsync(ImportSources.Expand(paths, messages), messages, progress, ct);
     }
 
-    public async Task<ImportReport> ImportFilesAsync(IReadOnlyList<string> hhFiles, IReadOnlyList<string> otsFiles,
-        IProgress<ImportProgress>? progress = null, CancellationToken ct = default)
+    private async Task<ImportReport> ImportUnitsAsync(IReadOnlyList<ImportUnit> units, List<string> messages,
+        IProgress<ImportProgress>? progress, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        var messages = new List<string>();
         var affected = new HashSet<long>();
-        int filesDone = 0, hands = 0, imported = 0, dups = 0, errors = 0, rejected = 0;
-        int total = hhFiles.Count + otsFiles.Count;
-        var pending = new List<HandParseResult>(BatchSize);
+        int filesDone = 0, hands = 0, imported = 0, dups = 0, errors = 0, rejected = 0, notOwn = 0;
+        // Архив считается одним файлом, пока не открыт; затем к общему числу добавляется его содержимое.
+        int total = units.Count;
+        var pending = new Dictionary<HandImporter, List<HandParseResult>>();
+        int pendingCount = 0;
         var pendingFiles = new List<(string File, long Size)>();
+        var importers = new Dictionary<string, HandImporter?>(StringComparer.OrdinalIgnoreCase);
+        var summaries = new List<(string Name, byte[] Bytes)>();
+
+        // Причины отказа копятся счётчиками: тысяча одинаковых строк «отклонён» ничего не объясняет.
+        var unknown = new Dictionary<(string Room, string Nick), (int Files, int Hands)>();
+        var otherRoom = new Dictionary<string, int>();
+        int observedFiles = 0, observedHands = 0, unparsed = 0;
+        string? unparsedSample = null;
+        string? wpnNick = null;
+        int wpnProbes = 0;
+        var restricted = new Dictionary<string, int>();
+        int restrictedWhileRunning = 0;
 
         async Task Flush()
         {
-            if (pending.Count > 0)
+            foreach (var (importer, list) in pending)
             {
-                var r = await _hands.ImportAsync(pending, ct);
-                imported += r.Imported; dups += r.Duplicates; errors += r.Errors;
+                if (list.Count == 0) continue;
+                var r = await importer.ImportAsync(list, ct);
+                imported += r.Imported; dups += r.Duplicates; errors += r.Errors; notOwn += r.NotOwn;
                 affected.UnionWith(r.AffectedPlayers);
-                pending.Clear();
+                list.Clear();
             }
+            pendingCount = 0;
             // Позиция дозора сохраняется только после успешной записи раздач файла.
             foreach (var (f, size) in pendingFiles) await SaveImportStateAsync(f, size, ct);
             pendingFiles.Clear();
@@ -82,73 +141,182 @@ public sealed class FileImporter
         {
             var el = sw.Elapsed;
             double rate = hands / Math.Max(el.TotalSeconds, 0.001);
-            TimeSpan? eta = filesDone > 0 ? TimeSpan.FromTicks(el.Ticks * (total - filesDone) / filesDone) : null;
+            TimeSpan? eta = filesDone > 0 && total > filesDone ? TimeSpan.FromTicks(el.Ticks * (total - filesDone) / filesDone) : null;
             progress?.Report(new ImportProgress(filesDone, total, hands, imported, dups, errors, rejected, rate, el, eta, file));
         }
 
-        foreach (var file in hhFiles)
+        async Task<HandImporter?> ImporterFor(RoomInfo room)
         {
-            ct.ThrowIfCancellationRequested();
-            Report(Path.GetFileName(file));
-            byte[] bytes;
-            try { bytes = ReadShared(file); }
-            catch (IOException ex) { messages.Add($"{file}: {ex.Message}"); filesDone++; continue; }
+            if (ParserRegistry.SameNetwork(room, _db.RoomCode)) return _hands;
+            if (_forRoom == null) return null;
+            // Скины WPN по тексту неразличимы, поэтому для всей сети импортёр один: какой именно скин —
+            // решает тот, кто создаёт импортёр (по никам Hero), а не первый попавшийся парсер.
+            string key = room.Network == "WPN" ? "WPN" : room.Code;
+            if (!importers.TryGetValue(key, out var importer))
+                importers[key] = importer = await _forRoom(room, ct);
+            return importer;
+        }
 
-            // Файл может дописываться клиентом прямо сейчас — берём только завершённые раздачи (§15.8).
-            bool quiet = DateTime.UtcNow - File.GetLastWriteTimeUtc(file) >= TimeSpan.FromSeconds(1);
+        async Task History(string name, byte[] bytes, string? diskPath)
+        {
+            // Файл на диске может дописываться клиентом прямо сейчас — берём только завершённые раздачи (§15.8).
+            bool quiet = diskPath == null || DateTime.UtcNow - File.GetLastWriteTimeUtc(diskPath) >= TimeSpan.FromSeconds(1);
             // Формат — по началу файла: от него зависит, как искать конец последней раздачи.
             var head = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, 4096));
             var detected = ParserRegistry.Detect(head, _db.RoomCode);
-            if (detected == null) { filesDone++; continue; } // не история раздач (итоги турниров, логи клиента)
-            int complete = CompleteHands.CompleteLength(bytes, quiet, detected.Value.Parser.Boundary);
+            if (detected == null) return; // не история раздач (итоги турниров, логи клиента)
+            var room = detected.Value.Room;
+            // GG запрещает сторонним программам импортировать свои раздачи, а с 01.12.2026 её клиент ещё и ищет
+            // сторонний покерный софт среди процессов. Поэтому без явного согласия игрока файл GG не принимается,
+            // а при запущенном клиенте GG — не принимается вовсе: трекер работает рядом с ним для других румов
+            // именно потому, что в это время не делает ничего, что относится к сети GG.
+            if (RoomHudPolicy.For(room.Code).ImportNeedsOptIn)
+            {
+                if (RoomClientProbe.ForbiddenCoexistence() != null) { rejected++; restrictedWhileRunning++; return; }
+                if (!AllowRestrictedRooms)
+                {
+                    rejected++;
+                    restricted[room.Title] = restricted.GetValueOrDefault(room.Title) + 1;
+                    return;
+                }
+            }
+            var importer = await ImporterFor(room);
+            if (importer == null)
+            {
+                rejected++;
+                string key = room.Network == "WPN" ? "WPN" : room.Title;
+                otherRoom[key] = otherRoom.GetValueOrDefault(key) + 1;
+                // Ник владельца файлов нужен для подсказки; ради него достаточно разобрать несколько файлов, а не все.
+                if (key == "WPN" && wpnNick == null && wpnProbes++ < 5)
+                    wpnNick = detected.Value.Parser.Parse(Encoding.UTF8.GetString(bytes), ParserRegistry.SourceFor(name))
+                        .Where(r => r.Ok).Select(r => r.Hand!.HeroName).FirstOrDefault(n => !string.IsNullOrEmpty(n));
+                return;
+            }
+            // Архив и файл, не менявшийся полминуты, уже никто не дописывает — берём их до последнего байта.
+            bool settled = diskPath == null || DateTime.UtcNow - File.GetLastWriteTimeUtc(diskPath) >= TimeSpan.FromSeconds(30);
+            int complete = CompleteHands.CompleteLength(bytes, quiet, detected.Value.Parser.Boundary, settled);
             var text = Encoding.UTF8.GetString(bytes, 0, complete);
-            if (!ParserRegistry.SameNetwork(detected.Value.Room, _db.RoomCode))
-            {
-                rejected++;
-                messages.Add($"Пропущен (формат {detected.Value.Room.Title}, активный рум — {_db.RoomCode}; смените рум в настройках): {Path.GetFileName(file)}");
-                filesDone++;
-                continue;
-            }
-            var results = detected.Value.Parser.Parse(text, ParserRegistry.SourceFor(file)).ToList();
+            var results = detected.Value.Parser.Parse(text, ParserRegistry.SourceFor(name)).ToList();
             hands += results.Count;
+            if (results.Count == 0) return;
 
-            // Защита от импорта чужого архива: файл без Hero ни в одной раздаче отклоняется целиком (§6.1).
-            if (results.Count > 0 && !results.Any(r => r.Ok && _hands.HeroSeated(r.Hand!)))
+            var ok = results.Where(r => r.Ok).ToList();
+            if (ok.Count == 0)
             {
                 rejected++;
-                messages.Add($"Отклонён (нет своих раздач — правила рума): {Path.GetFileName(file)}");
+                unparsed++;
+                unparsedSample ??= $"{Path.GetFileName(name)}: {results[0].Error}";
+                return;
+            }
+            // Защита от импорта чужого архива: файл без Hero ни в одной раздаче отклоняется целиком (§6.1) —
+            // если игрок сам не включил загрузку раздач без него (AllowObserved).
+            if (!importer.AllowObserved && !ok.Any(r => importer.HeroSeated(r.Hand!)))
+            {
+                rejected++;
+                // Клиент рума пишет карманные карты только своему игроку, так что ник из «Dealt to» —
+                // владелец файла. Если карт нет ни у кого, раздачи записаны наблюдателем.
+                var nick = ok.Select(r => r.Hand!.HeroName).FirstOrDefault(n => !string.IsNullOrEmpty(n));
+                if (nick == null) { observedFiles++; observedHands += ok.Count; }
+                else
+                {
+                    var prev = unknown.GetValueOrDefault((room.Code, nick));
+                    unknown[(room.Code, nick)] = (prev.Files + 1, prev.Hands + ok.Count);
+                }
+                return;
+            }
+
+            if (!pending.TryGetValue(importer, out var list)) pending[importer] = list = new List<HandParseResult>(BatchSize);
+            list.AddRange(results);
+            pendingCount += results.Count;
+            if (diskPath != null) pendingFiles.Add((diskPath, complete));
+            if (pendingCount >= BatchSize) await Flush();
+        }
+
+        foreach (var unit in units)
+        {
+            ct.ThrowIfCancellationRequested();
+            Report(Path.GetFileName(unit.Path));
+            if (unit.Kind == ImportKind.Archive)
+            {
+                foreach (var entry in ImportSources.ReadArchive(unit.Path, messages, n => total += n))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Report(Path.GetFileName(entry.Name));
+                    if (entry.Kind == ImportKind.Summary) summaries.Add((entry.Name, entry.Bytes));
+                    else await History(entry.Name, entry.Bytes, null);
+                    filesDone++;
+                }
                 filesDone++;
                 continue;
             }
-
-            pending.AddRange(results);
-            pendingFiles.Add((file, complete));
-            if (pending.Count >= BatchSize) await Flush();
+            byte[] bytes;
+            try { bytes = ReadShared(unit.Path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                messages.Add($"{unit.Path}: {ex.Message}");
+                filesDone++;
+                continue;
+            }
+            if (unit.Kind == ImportKind.Summary) summaries.Add((unit.Path, bytes));
+            else await History(unit.Path, bytes, unit.Path);
             filesDone++;
         }
         await Flush();
 
+        // Итоги турниров — после раздач, как и раньше: сами турниры к этому моменту уже заведены импортом рук.
         int tourneys = 0;
-        foreach (var file in otsFiles)
+        foreach (var (name, bytes) in summaries)
         {
             ct.ThrowIfCancellationRequested();
-            Report(Path.GetFileName(file));
             try
             {
-                var summary = TournamentSummaryParser.Parse(Encoding.UTF8.GetString(ReadShared(file)), file);
-                await new TournamentImporter(_db).ImportAsync(summary, file, ct);
+                var summary = TournamentSummaryParser.Parse(Encoding.UTF8.GetString(bytes), name);
+                await new TournamentImporter(_db).ImportAsync(summary, name, ct);
                 tourneys++;
             }
             catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException or IOException)
             {
                 errors++;
-                messages.Add($"{Path.GetFileName(file)}: {ex.Message}");
+                messages.Add($"{Path.GetFileName(name)}: {ex.Message}");
             }
-            filesDone++;
         }
         Report(null);
 
-        return new ImportReport(total, hands, imported, dups, errors, rejected, tourneys, sw.Elapsed, affected, messages);
+        var unknownHeroes = unknown
+            .Select(kv => new UnknownHero(kv.Key.Room, ParserRegistry.Room(kv.Key.Room)?.Title ?? kv.Key.Room, kv.Key.Nick, kv.Value.Files, kv.Value.Hands))
+            .OrderByDescending(u => u.Hands).ToList();
+        var summary2 = new List<string>();
+        foreach (var u in unknownHeroes)
+            summary2.Add($"Не импортировано: {u.Files} файл(ов), {u.Hands:N0} раздач игрока «{u.Nickname}» ({u.RoomTitle}) — этого ника нет в списке «Мои ники». " +
+                         "Если это ваш аккаунт, добавьте его и повторите импорт.");
+        if (observedFiles > 0)
+            summary2.Add($"Отклонено: {observedFiles} файл(ов), {observedHands:N0} раздач без карманных карт игрока — это чужие раздачи (наблюдаемые или купленные). " +
+                         "По умолчанию трекер принимает только собственные раздачи: так требуют правила румов. " +
+                         "Загрузку таких раздач можно включить на вкладке «Импорт» — на свой риск.");
+        foreach (var (room, n) in otherRoom)
+            summary2.Add(room == "WPN"
+                ? $"Пропущено: {n} файл(ов) сети WPN{(wpnNick != null ? $" (игрок «{wpnNick}»)" : "")} — по файлу не определить, какой это рум сети. " +
+                  "Добавьте свой ник в «Мои ники», выбрав рум WPN (PokerKing, ACR, Black Chip или True Poker), и повторите импорт."
+                : $"Пропущено: {n} файл(ов) формата {room} — этот рум не заведён в базе.");
+        foreach (var (room, n) in restricted)
+            summary2.Add($"Не импортировано: {n} файл(ов) {room}. Правила этой сети запрещают сторонним программам импортировать её раздачи " +
+                         "(в том числе выгруженные из PokerCraft). Импорт можно включить на вкладке «Импорт» — на свой риск.");
+        if (restrictedWhileRunning > 0)
+            summary2.Add($"Не импортировано: {restrictedWhileRunning} файл(ов) сети GG — запущен клиент GG. Пока он открыт, трекер не работает " +
+                         "с раздачами GG; повторите импорт после сессии, когда клиент GG закрыт. Раздачи других румов импортируются как обычно.");
+        if (notOwn > 0)
+            summary2.Add($"Пропущено: {notOwn:N0} раздач, где вас не было за столом (в принятых файлах).");
+        if (unparsed > 0)
+            summary2.Add($"Не разобрано: {unparsed} файл(ов), ни одной раздачи не прочитано. Первый: {unparsedSample}");
+        summary2.AddRange(messages);
+
+        return new ImportReport(total, hands, imported, dups, errors, rejected, tourneys, sw.Elapsed, affected, summary2)
+        {
+            UnknownHeroes = unknownHeroes,
+            UnknownWpn = wpnNick != null && otherRoom.TryGetValue("WPN", out int wpnFiles) ? new UnknownHero("WPN", "сеть WPN", wpnNick, wpnFiles, 0) : null,
+            ObservedFiles = observedFiles,
+            NotOwnHands = notOwn,
+        };
     }
 
     private async Task SaveImportStateAsync(string file, long offset, CancellationToken ct)

@@ -17,6 +17,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
+            // Состояние трекера — не анализ: отвечает и при запущенном клиенте рума.
             var host = await ctx.HostAsync(ct);
             await using var conn = await host.Db.Reports.OpenConnectionAsync(ct);
             await using var cmd = new NpgsqlCommand("""
@@ -52,7 +53,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.AnalysisHostAsync(ct);
             var kind = TrackerContext.ParseGame(game);
             var rep = new ReportRepository(host.Db);
             var o = await rep.OverviewAsync(kind, ctx.Settings.SessionGapMinutes, ct);
@@ -87,8 +88,8 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
-            var rows = await new ReportRepository(host.Db).SessionsAsync(ctx.Settings.SessionGapMinutes, ct);
+            var host = await ctx.AnalysisHostAsync(ct);
+            var rows = await new ReportRepository(host.Db).SessionsAsync(ctx.Settings.SessionGapMinutes, ct: ct);
             return TrackerContext.ToJson(rows.Take(Math.Clamp(limit, 1, 500)).Select(s => new
             {
                 start = TrackerContext.Iso(s.Start),
@@ -108,7 +109,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.AnalysisHostAsync(ct);
             var rows = await new ReportRepository(host.Db).TournamentsAsync(ct);
             var evs = await new TournamentEvService(host.Db).ComputeAsync(ct);
             return TrackerContext.ToJson(rows.Take(Math.Clamp(limit, 1, 1000)).Select(t =>
@@ -149,7 +150,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
         [Description("Пропустить столько подходящих рук (пагинация)")] int offset = 0,
         CancellationToken ct = default)
     {
-        var host = await ctx.HostAsync(ct);
+        var host = await ctx.AnalysisHostAsync(ct);
         GameKind? kind = game.Trim().ToLowerInvariant() == "all" ? null : TrackerContext.ParseGame(game);
         var expr = string.IsNullOrWhiteSpace(filter) ? "true" : filter;
         var compiled = StatCompiler.CompileHandFilter(expr);
@@ -179,7 +180,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     [Description("Полная раздача: исходный текст hand history, игроки с позициями, стеками в bb, картами (если известны) и результатом, доски, действия с суммами в bb.")]
     public async Task<string> GetHand([Description("Номер раздачи рума (hand_id из search_hands)")] long hand_id, CancellationToken ct = default)
     {
-        var host = await ctx.HostAsync(ct);
+        var host = await ctx.AnalysisHostAsync(ct);
         var rep = new ReportRepository(host.Db);
         var pk = await rep.ResolveHandPkAsync(hand_id, ct) ?? throw new ArgumentException($"Раздача {hand_id} не найдена");
         var hand = await rep.LoadReplayAsync(pk, ct) ?? throw new ArgumentException($"Раздача {hand_id} не найдена");
@@ -231,7 +232,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.AnalysisHostAsync(ct);
             var rows = await new ReportRepository(host.Db).SearchPlayersAsync(prefix, Math.Clamp(limit, 1, 500), ct);
             return TrackerContext.ToJson(rows.Select(p => new
             {
@@ -249,7 +250,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.AnalysisHostAsync(ct);
             var kind = TrackerContext.ParseGame(game);
             var p = await host.Hud.FindPlayerAsync(ctx.Anonymizer.Resolve(player), ct) ?? throw new ArgumentException($"Игрок '{player}' не найден");
             var set = await host.Hud.GetAsync(p.PlayerId, kind, ct);
@@ -277,7 +278,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.AnalysisHostAsync(ct);
             var kind = TrackerContext.ParseGame(game);
             var stat = host.Stats.FirstOrDefault(s => s.Code == stat_code) ?? throw new ArgumentException($"Стат '{stat_code}' не найден");
             var p = await host.Hud.FindPlayerAsync(ctx.Anonymizer.Resolve(player), ct) ?? throw new ArgumentException($"Игрок '{player}' не найден");
@@ -315,7 +316,7 @@ public sealed class AnalysisTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.AnalysisHostAsync(ct);
             var rows = await LeakFinder.ComputeAsync(host, TrackerContext.ParseGame(game), ct);
             return TrackerContext.ToJson(rows.Select(r => new
             {

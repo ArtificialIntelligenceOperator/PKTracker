@@ -153,17 +153,29 @@ public sealed class HudEditorWindow : Window
 
     // ── Профили и вкладки ────────────────────────────────────────────────────
 
+    /// <summary>Список наполняется программно: смена выбора в этот момент — не просьба загрузить другой профиль.</summary>
+    private bool _fillingProfiles;
+
     private void ReloadProfileList()
     {
-        _profileBox.Items.Clear();
-        foreach (var p in DefaultProfiles.All) _profileBox.Items.Add("[встроенный] " + p.Name);
-        foreach (var name in _store.List()) _profileBox.Items.Add(name);
-        _profileBox.SelectedIndex = 0;
+        _fillingProfiles = true;
+        try
+        {
+            _profileBox.Items.Clear();
+            foreach (var p in DefaultProfiles.All) _profileBox.Items.Add("[встроенный] " + p.Name);
+            var saved = _store.List();
+            foreach (var name in saved) _profileBox.Items.Add(name);
+            // В списке выбран тот профиль, который открыт в редакторе. Раньше выбор всегда падал на первую строку,
+            // и после «Сохранить» редактор молча подменял только что сохранённую раскладку встроенной.
+            string current = saved.Contains(_profile.Name) ? _profile.Name : "[встроенный] " + _profile.Name;
+            _profileBox.SelectedItem = _profileBox.Items.Cast<string>().FirstOrDefault(i => i == current);
+        }
+        finally { _fillingProfiles = false; }
     }
 
     private void LoadSelectedProfile()
     {
-        if (_profileBox.SelectedItem is not string item) return;
+        if (_fillingProfiles || _profileBox.SelectedItem is not string item) return;
         HudProfile? loaded = item.StartsWith("[встроенный] ")
             ? DefaultProfiles.All.FirstOrDefault(p => p.Name == item["[встроенный] ".Length..])
             : _store.Load(item);

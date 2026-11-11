@@ -10,6 +10,13 @@ namespace PKTracker.Data.Import;
 public sealed record ImportBatchResult(int Imported, int Duplicates, int Errors, IReadOnlyCollection<long> AffectedPlayers, long MaxHandPk)
 {
     public static readonly ImportBatchResult Empty = new(0, 0, 0, Array.Empty<long>(), 0);
+
+    /// <summary>
+    /// Раздачи, где Hero не сидел за столом. Это не ошибка формата, а ожидаемый отсев (в файле турнира
+    /// встречаются раздачи после вылета, в чужих выгрузках — столы без вас), поэтому в журнал ошибок
+    /// они не пишутся: тысячи одинаковых строк прятали бы настоящие ошибки разбора.
+    /// </summary>
+    public int NotOwn { get; init; }
 }
 
 /// <summary>
@@ -33,6 +40,13 @@ public sealed class HandImporter
 
     public IReadOnlySet<string> Heroes => _heroes;
 
+    /// <summary>
+    /// Принимать и раздачи, где Hero не сидел за столом (наблюдаемые, купленные — «майнинг»). По умолчанию
+    /// выключено: правила большинства румов такие раздачи запрещают, и включает это сам игрок, на свой риск.
+    /// Авто-импорт из папки клиента этот режим не использует никогда.
+    /// </summary>
+    public bool AllowObserved { get; init; }
+
     /// <summary>Hero (любой из hero_account) сидит за столом (§6.1).</summary>
     public bool HeroSeated(ParsedHand h)
     {
@@ -47,23 +61,26 @@ public sealed class HandImporter
         var errors = new List<(HandParseResult R, string Message)>();
         var candidates = new List<(ParsedHand Hand, HandContext Ctx)>();
         var seenIds = new HashSet<long>();
-        int duplicates = 0;
+        int duplicates = 0, notOwn = 0;
+
+        // Уже загруженные раздачи отсеиваем до построения контекста: оно стоит дорого (All-in EV — перебор
+        // бордов), и повторная загрузка той же выгрузки иначе шла бы так же долго, как первая. Это только
+        // ускорение — окончательная проверка на дубли остаётся внутри транзакции записи.
+        var known = await ExistingIdsAsync(batch.Where(r => r.Ok && (AllowObserved || HeroSeated(r.Hand!))).Select(r => r.Hand!.ExternalHandId).Distinct().ToArray(), ct);
 
         foreach (var r in batch)
         {
             if (!r.Ok) { errors.Add((r, r.Error!)); continue; }
             var h = r.Hand!;
-            if (!HeroSeated(h))
-            {
-                errors.Add((r, "Rejected: hero is not seated at the table (room rules: only own hands)"));
-                continue;
-            }
+            bool own = HeroSeated(h);
+            if (!own && !AllowObserved) { notOwn++; continue; }
             foreach (var s in h.Seats)
                 if (_heroes.Contains(s.Name)) { s.IsHero = true; h.HeroName ??= s.Name; }
-            if (!seenIds.Add(h.ExternalHandId)) { duplicates++; continue; }
+            if (!seenIds.Add(h.ExternalHandId) || known.Contains(h.ExternalHandId)) { duplicates++; continue; }
             try
             {
-                var ctx = HandContextBuilder.Build(h, computeEv: true);
+                // All-in EV нужен для результата Hero; в раздаче без него это только перебор бордов впустую.
+                var ctx = HandContextBuilder.Build(h, computeEv: own);
                 var inv = Invariants.Check(h, ctx);
                 if (inv.Count > 0) { errors.Add((r, "Invariant: " + string.Join("; ", inv))); continue; }
                 candidates.Add((h, ctx));
@@ -78,12 +95,25 @@ public sealed class HandImporter
         await Gate.WaitAsync(ct);
         try
         {
-            return await WriteAsync(candidates, errors, duplicates, ct);
+            return await WriteAsync(candidates, errors, duplicates, ct) with { NotOwn = notOwn };
         }
         finally
         {
             Gate.Release();
         }
+    }
+
+    private async Task<HashSet<long>> ExistingIdsAsync(long[] ids, CancellationToken ct)
+    {
+        var existing = new HashSet<long>();
+        if (ids.Length == 0) return existing;
+        await using var conn = await _db.Import.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand("SELECT external_hand_id FROM hands WHERE room_id = $1 AND external_hand_id = ANY($2)", conn);
+        cmd.Parameters.AddWithValue(_roomId);
+        cmd.Parameters.AddWithValue(ids);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) existing.Add(r.GetInt64(0));
+        return existing;
     }
 
     private static readonly SemaphoreSlim Gate = new(1, 1);

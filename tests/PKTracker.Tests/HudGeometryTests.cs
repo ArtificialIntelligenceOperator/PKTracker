@@ -29,6 +29,16 @@ public class HudGeometryTests
     public void TournamentTitle(string title, bool expected) =>
         Assert.Equal(expected, HudGeometry.TitleMatches(title, Mtt("Main Event - $100,000 GTD #7", "T7", 40000001)));
 
+    [Theory]
+    [InlineData("$5.00+$0.50 USD Hold'em No Limit - Blinds 100/200 - Tournament 40000001 Table 1 - Logged In as hero", true)]
+    [InlineData("Tournament 40000001 Table 12", false)]   // другой стол того же турнира
+    [InlineData("Tournament 40000002 Table 1", false)]    // тот же номер стола, другой турнир
+    public void TournamentTitleWhenHistoryWritesIdAndTableTogether(string title, bool expected) =>
+        // PokerStars пишет в раздаче Table '40000001 1': id турнира и номер стола одним полем,
+        // а в заголовке окна они стоят порознь
+        Assert.Equal(expected, HudGeometry.TitleMatches(title,
+            Mtt("$5.00+$0.50 USD #40000001 стол 1", "T40000001 1", 40000001)));
+
     [Fact]
     public void HeroIsAlwaysAtBottom()
     {

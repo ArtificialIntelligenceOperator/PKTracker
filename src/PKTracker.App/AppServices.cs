@@ -30,7 +30,18 @@ public sealed class AppServices : IAsyncDisposable
     public string DbStatus { get; private set; } = "не подключено";
     /// <summary>Раздач со старым ContextVersion; > 0 — нужен полный ребилд.</summary>
     public long StaleContextHands { get; private set; }
+
+    /// <summary>Перечитать число раздач старой версии контекста (после импорта и после пересчёта базы).</summary>
+    public async Task<long> RefreshStaleContextAsync()
+    {
+        if (Host is not { } host) return 0;
+        return StaleContextHands = await Task.Run(() => host.StaleContextHandsAsync());
+    }
     public string WatcherStatus { get; private set; } = "выключен";
+
+    /// <summary>Имя процесса запущенного клиента GG; null — клиент GG не запущен.</summary>
+    public string? GgClient { get; private set; }
+    private DispatcherTimer? _coexistenceTimer;
 
     public event Action? StatusChanged;
     public event Action<ImportBatchResult>? HandsImported;
@@ -97,6 +108,7 @@ public sealed class AppServices : IAsyncDisposable
 
         StartWatcher();
         StartFeed();
+        StartCoexistenceGuard();
         StartSettingsWatcher();
         _backupTimer?.Dispose();
         _backupTimer = new System.Threading.Timer(_ => _ = AutoBackupAsync(), null, TimeSpan.FromMinutes(2), TimeSpan.FromHours(1));
@@ -130,8 +142,41 @@ public sealed class AppServices : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Игроки часто держат открытыми несколько румов сразу, и GG — один из них, поэтому рядом с клиентом GG трекер
+    /// продолжает работать для остальных румов: HUD, авто-импорт и .data-канал не останавливаются. С самой сетью GG
+    /// он при этом не взаимодействует никак: оверлея над её столами нет, её окна не читаются, а импорт её раздач,
+    /// пока клиент запущен, закрыт (<see cref="FileImporter"/>). От проверки процессов клиентом GG трекер не прячется —
+    /// и не должен: по правилу GG от 15.10.2026 любой сторонний покерный софт рядом с клиентом остаётся на риске игрока,
+    /// о чём и напоминает строка в журнале при каждом запуске клиента GG.
+    /// </summary>
+    private void StartCoexistenceGuard()
+    {
+        if (_coexistenceTimer != null) return;
+        _coexistenceTimer = new DispatcherTimer(TimeSpan.FromSeconds(5), DispatcherPriority.Background, async (_, _) =>
+        {
+            // Перебор процессов — в фоне: он стоит десятки миллисекунд, а таймер тикает в UI-потоке.
+            var now = await Task.Run(RoomClientProbe.ForbiddenCoexistence);
+            if (now == GgClient) return;
+            GgClient = now;
+            if (now != null)
+                Log("App", $"Запущен клиент GG ({now}). PKTracker продолжает работать для остальных румов; с сетью GG он не взаимодействует " +
+                           "(нет HUD над её столами, импорт её раздач закрыт, пока клиент открыт). Учтите: с 01.12.2026 GG запрещает " +
+                           "любой сторонний покерный софт рядом со своим клиентом и проверяет запущенные программы — это ваш риск.");
+            else Log("App", "Клиент GG закрыт.");
+        }, _ui);
+        _coexistenceTimer.Start();
+    }
+
     private void StartWatcher()
     {
+        if (Host != null && RoomHudPolicy.For(Settings.RoomCode).ImportNeedsOptIn)
+        {
+            // У GG нет локальной истории, а сторонний импорт её раздач запрещён политикой сети: автоматически
+            // их не берём никогда — только ручной импорт после явного включения игроком.
+            WatcherStatus = "выключен: правила GG запрещают сторонний импорт раздач (ручной импорт — на вкладке «Импорт», на свой риск)";
+            return;
+        }
         if (Host == null || !Settings.AutoImport || string.IsNullOrWhiteSpace(Settings.HandHistoryFolder) || !Directory.Exists(Settings.HandHistoryFolder))
         {
             WatcherStatus = Settings.AutoImport ? "папка HH не задана или не существует" : "выключен";
@@ -254,6 +299,19 @@ public sealed class AppServices : IAsyncDisposable
     /// <summary>Папка бэкапов: из настроек, иначе «Документы». Системный диск бывает тесным — путь должен переноситься.</summary>
     public string BackupFolder => string.IsNullOrWhiteSpace(Settings.BackupFolder) ? DefaultBackupFolder : Settings.BackupFolder!;
 
+    /// <summary>
+    /// Бэкапы активной базы, новые первыми. Имя файла начинается с имени базы: баз может быть несколько,
+    /// и чистка старых копий одной не должна задевать копии другой («pktracker» и «pktracker_test»).
+    /// </summary>
+    private List<FileInfo> BackupFiles()
+    {
+        if (!Directory.Exists(BackupFolder)) return new List<FileInfo>();
+        var db = System.Text.RegularExpressions.Regex.Escape(DatabaseCatalog.Current(Settings.ConnectionString));
+        var rule = new System.Text.RegularExpressions.Regex($@"^{db}_\d{{8}}_\d{{6}}\.dump$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return new DirectoryInfo(BackupFolder).GetFiles("*.dump").Where(f => rule.IsMatch(f.Name))
+            .OrderByDescending(f => f.LastWriteTimeUtc).ToList();
+    }
+
     private int _backupRunning;
 
     /// <summary>Проверяется раз в час: если последний бэкап старше AutoBackupDays — делаем новый и удаляем лишние.</summary>
@@ -263,12 +321,10 @@ public sealed class AppServices : IAsyncDisposable
         if (Interlocked.Exchange(ref _backupRunning, 1) == 1) return;
         try
         {
-            var files = Directory.Exists(BackupFolder)
-                ? new DirectoryInfo(BackupFolder).GetFiles("pktracker_*.dump").OrderByDescending(f => f.LastWriteTimeUtc).ToList()
-                : new List<FileInfo>();
+            var files = BackupFiles();
             if (files.Count > 0 && DateTime.UtcNow - files[0].LastWriteTimeUtc < TimeSpan.FromDays(Settings.AutoBackupDays)) return;
             await BackupAsync();
-            files = new DirectoryInfo(BackupFolder).GetFiles("pktracker_*.dump").OrderByDescending(f => f.LastWriteTimeUtc).ToList();
+            files = BackupFiles();
             foreach (var old in files.Skip(Math.Max(1, Settings.KeepBackups)))
             {
                 old.Delete();
@@ -293,7 +349,7 @@ public sealed class AppServices : IAsyncDisposable
         var b = new Npgsql.NpgsqlConnectionStringBuilder(Settings.ConnectionString);
         var dir = BackupFolder;
         Directory.CreateDirectory(dir);
-        var file = Path.Combine(dir, $"pktracker_{DateTime.Now:yyyyMMdd_HHmmss}.dump");
+        var file = Path.Combine(dir, $"{b.Database}_{DateTime.Now:yyyyMMdd_HHmmss}.dump");
         var psi = new ProcessStartInfo(pgDump, $"-h {b.Host} -p {b.Port} -U {b.Username} -Fc -f \"{file}\" {b.Database}")
         {
             CreateNoWindow = true, UseShellExecute = false, RedirectStandardError = true,
@@ -312,6 +368,7 @@ public sealed class AppServices : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _backupTimer?.Dispose();
+        _coexistenceTimer?.Stop();
         Hud.Dispose();
         await StopBackgroundAsync();
     }

@@ -67,9 +67,12 @@ internal static class Fmt
     /// <summary>Со знаком: стиль SignCell красит ячейку по первому символу.</summary>
     public static string Sg(double? v, int d) =>
         v is null ? "—" : (v.Value >= 0 ? "+" : "") + v.Value.ToString("F" + d, CultureInfo.InvariantCulture);
-    public static string Cash(long cents) => (cents / 100.0).ToString("$#,0.00", CultureInfo.InvariantCulture);
-    public static string SgCash(long cents) => (cents / 100.0).ToString("+$#,0.00;-$#,0.00;$0.00", CultureInfo.InvariantCulture);
-    public static string Chips(long v) => (v / 100).ToString("+#,0;-#,0;0", CultureInfo.InvariantCulture);
+    // Разряды — как во всём приложении (пробел в русской локали): «−1 234 567» рядом с «12 345», а не «-1,234,567».
+    // Дробная часть при этом остаётся с точкой, как у остальных чисел отчёта.
+    private static readonly NumberFormatInfo Grouped = new() { NumberGroupSeparator = CultureInfo.CurrentCulture.NumberFormat.NumberGroupSeparator };
+    public static string Cash(long cents) => (cents / 100.0).ToString("$#,0.00", Grouped);
+    public static string SgCash(long cents) => (cents / 100.0).ToString("+$#,0.00;-$#,0.00;$0.00", Grouped);
+    public static string Chips(long v) => (v / 100).ToString("+#,0;-#,0;0", Grouped);
 }
 
 /// <summary>
@@ -87,6 +90,10 @@ public sealed class ReportsView : UserControl
     private List<TournamentRow> _tournaments = new();
     private Dictionary<long, string> _formatOf = new();
     private CancellationTokenSource? _cts;
+    /// <summary>Для какой базы прочитан список турниров: после смены базы прежний список и срез недействительны.</summary>
+    private TrackerHost? _catalogHost;
+    /// <summary>Вид игры выставляется программно: срез уже задан, перезагружать по событию списка не нужно.</summary>
+    private bool _settingKind;
 
     private readonly ComboBox _kind = new() { Width = 110, Margin = new Thickness(0, 0, 8, 0) };
     private readonly WrapPanel _chips = new() { VerticalAlignment = VerticalAlignment.Center };
@@ -108,7 +115,7 @@ public sealed class ReportsView : UserControl
         {
             // Полосы стека и денежные колонки у кеша другие — срез начинается с нуля.
             _slice = new ReportSlice { Kind = _kind.SelectedIndex == 1 ? GameKind.Cash : GameKind.Mtt };
-            await ReloadAsync();
+            if (!_settingKind) await ReloadAsync();
         };
 
         BuildColumns();
@@ -195,20 +202,36 @@ public sealed class ReportsView : UserControl
 
     public void Attach(AppServices svc) => _svc = svc;
 
+    /// <summary>Вид игры при первом показе — тот, в котором у Hero есть раздачи. Данные загрузятся, когда вкладку откроют.</summary>
+    public void SetDefaultKind(GameKind kind)
+    {
+        _settingKind = true;
+        try { _kind.SelectedIndex = kind == GameKind.Cash ? 1 : 0; }
+        finally { _settingKind = false; }
+        _slice = new ReportSlice { Kind = kind == GameKind.Cash ? GameKind.Cash : GameKind.Mtt };
+    }
+
     // ── загрузка ───────────────────────────────────────────────────────────
 
-    public async Task ReloadAsync()
+    /// <param name="refreshCatalog">
+    /// Перечитать список турниров: вкладку открыли заново, а с прошлого раза могли загрузить раздачи или итоги.
+    /// При сужении среза двойным кликом список тот же, и читать его повторно незачем.
+    /// </param>
+    public async Task ReloadAsync(bool refreshCatalog = false)
     {
         var host = _svc?.Host;
         if (host == null) return;
         _cts?.Cancel();
         var cts = _cts = new CancellationTokenSource();
         var ct = cts.Token;
+        // Срез со списком турниров другой базы к этой неприменим: id турниров в ней свои.
+        if (_catalogHost != null && _catalogHost != host) _slice = new ReportSlice { Kind = _slice.Kind };
         var slice = _slice;
         var repo = new SliceReportRepository(host.Db);
 
-        if (_tournaments.Count == 0)
+        if (_tournaments.Count == 0 || refreshCatalog || _catalogHost != host)
         {
+            _catalogHost = host;
             _tournaments = await Task.Run(() => new ReportRepository(host.Db).TournamentsAsync(ct), ct);
             _formatOf = _tournaments.ToDictionary(t => t.TournamentId, t => t.FormatLabel);
         }
@@ -335,7 +358,13 @@ public sealed class ReportsView : UserControl
                 Key = g.Key, Tournament = slice.IsTournament, S = g.Stats, A = g.Actions,
                 Label = SliceReportRepository.Label(by, g.Key, slice.IsTournament),
             })
-            .OrderBy(r => by is Breakdown.Month or Breakdown.Limit ? r.Key.PadLeft(8, '0') : int.Parse(r.Key).ToString("D3"))
+            .OrderBy(r => by switch
+            {
+                Breakdown.Month or Breakdown.Limit => r.Key.PadLeft(8, '0'),
+                // Позиции — в порядке хода за столом (UTG … BTN, SB, BB), хедз-ап строка — сразу за обычной.
+                Breakdown.Position => (PositionOrder.AtTable(SliceReportRepository.PositionKey(r.Key).Pos) * 2 + int.Parse(r.Key) % 2).ToString("D3"),
+                _ => int.Parse(r.Key).ToString("D3"),
+            })
             .ToList();
         rows.Add(Total(rows, slice, SliceMoney.Empty));
         return rows;
@@ -493,7 +522,11 @@ public sealed class ReportsView : UserControl
     {
         foreach (var g in new[] { _gTourn, _gStack, _gPos, _gMonth })
         {
-            g.Columns.Add(Col(g == _gTourn ? "Формат" : g == _gStack ? "Стек" : g == _gPos ? "Позиция" : "Месяц", nameof(SliceRowVm.Label), width: 1));
+            // Название группы — колонка по содержимому с минимальной шириной: «звёздная» в таблице, которая шире окна,
+            // сжималась до нуля, и строки оставались без подписи.
+            var label = Col(g == _gTourn ? "Формат" : g == _gStack ? "Стек" : g == _gPos ? "Позиция" : "Месяц", nameof(SliceRowVm.Label));
+            label.MinWidth = g == _gTourn ? 170 : 110;
+            g.Columns.Add(label);
             if (g == _gTourn)
             {
                 g.Columns.Add(Col("Турниров", nameof(SliceRowVm.TournText)));
@@ -529,9 +562,9 @@ public sealed class ReportsView : UserControl
         _gAction.Columns.Add(Col("Руки", nameof(ActionRowVm.HandsText)));
         _gAction.Columns.Add(Col("bb/100", nameof(ActionRowVm.Bb100), sign: true));
 
-        _gHands.Columns.Add(new DataGridTextColumn { Header = "Время", Binding = new Binding("PlayedLocal") { StringFormat = "dd.MM HH:mm:ss" } });
+        _gHands.Columns.Add(new DataGridTextColumn { Header = "Время", Binding = new Binding("PlayedLocal") { StringFormat = "dd.MM.yy HH:mm:ss" } });
         _gHands.Columns.Add(Col("Стол", "Row.Table", width: 1));
-        _gHands.Columns.Add(Col("Ставки", "Row.Stakes"));
+        _gHands.Columns.Add(Col("Ставки", nameof(HandVm.StakesText)));
         _gHands.Columns.Add(Col("Поз.", nameof(HandVm.PositionText)));
         _gHands.Columns.Add(Col("Карты", "Row.Cards"));
         _gHands.Columns.Add(Col("Итог", nameof(HandVm.NetText), sign: true));

@@ -152,10 +152,14 @@ public sealed class HudGridControl : Grid
         text.Inlines.Add(new System.Windows.Documents.Run(r.Text));
         // Малая выборка — мелкой цифрой справа внизу, как в Hand2Note: «50₂» читается быстрее, чем «50 (2)».
         if (r.SmallSample is { } n)
-            text.Inlines.Add(new System.Windows.Documents.Run(n.ToString())
+        {
+            var sample = new System.Windows.Documents.Run(n.ToString())
             {
                 FontSize = Math.Max(7, text.FontSize * 0.7), BaselineAlignment = BaselineAlignment.Subscript,
-            });
+            };
+            text.Inlines.Add(sample);
+            FitSample(text, sample, CellWidth(cell));
+        }
 
         var border = new Border
         {
@@ -192,6 +196,37 @@ public sealed class HudGridControl : Grid
         }
         _byIndex[index] = border;
         Children.Add(border);
+    }
+
+    /// <summary>Ширина ячейки в DIP с учётом объединения колонок; 0 — сетка ещё не размечена.</summary>
+    private double CellWidth(HudCell cell)
+    {
+        double w = 0;
+        for (int c = cell.Col; c < cell.Col + Math.Max(1, cell.ColSpan) && c < ColumnDefinitions.Count; c++)
+            w += ColumnDefinitions[c].Width.Value;
+        return w;
+    }
+
+    /// <summary>
+    /// Значение с мелкой цифрой выборки шире обычного, и в узкой ячейке оно обрезалось до «2…» — число,
+    /// по которому принимают решение, пропадало. Сначала ужимаются поля и сама цифра выборки, а если места
+    /// всё равно нет — цифра выборки убирается: значение важнее, а малую выборку и так показывает приглушённый цвет.
+    /// </summary>
+    private static void FitSample(TextBlock text, System.Windows.Documents.Run sample, double cellWidth)
+    {
+        if (cellWidth <= 0) return;
+        double room = cellWidth - 1;   // поля рамки ячейки
+        bool Fits()
+        {
+            text.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return text.DesiredSize.Width <= room;
+        }
+        if (Fits()) return;
+        text.Margin = new Thickness(1, 0, 1, 0);
+        if (Fits()) return;
+        sample.FontSize = Math.Max(6, text.FontSize * 0.55);
+        if (Fits()) return;
+        text.Inlines.Remove(sample);
     }
 
     private static Brush? Brush(string? hex)

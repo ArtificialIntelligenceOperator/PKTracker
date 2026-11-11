@@ -126,6 +126,19 @@ public sealed class AnalyticsView : UserControl
 
     public void Attach(AppServices svc) => _svc = svc;
 
+    /// <summary>Вид игры при первом показе — тот, в котором у Hero есть раздачи. Данные загрузятся, когда вкладку откроют.</summary>
+    public void SetDefaultKind(GameKind kind)
+    {
+        // Пока _ready снят, обработчик списка ничего не перезагружает: это расстановка умолчаний, а не выбор пользователя.
+        _ready = false;
+        try
+        {
+            _kind.SelectedIndex = kind == GameKind.Cash ? 1 : 0;
+            FillStacks();
+        }
+        finally { _ready = true; }
+    }
+
     /// <summary>Открыть внутреннюю вкладку по заголовку («Сила руки», «Графики»).</summary>
     public void SelectTab(string header)
     {

@@ -75,7 +75,10 @@ public sealed class HudManager : IDisposable
         }
     }
 
-    /// <summary>Разрешён ли оверлей правилами активного рума (GG — нет).</summary>
+    /// <summary>
+    /// Разрешён ли оверлей правилами активного рума (GG — нет). Открытый рядом клиент GG оверлею над столами
+    /// других румов не мешает: окна ищутся только у процесса активного рума, к окнам GG трекер не прикасается.
+    /// </summary>
     private bool Allowed => _svc.Host is not { } h || RoomHudPolicy.For(h.Db.RoomCode).HudAllowed;
 
     public void Start()
@@ -88,6 +91,8 @@ public sealed class HudManager : IDisposable
             _svc.Log("Hud", "HUD над столом выключен: " + RoomHudPolicy.For(h.Db.RoomCode).Summary);
             return;
         }
+        // Статы могли перечитать (reload.signal), рум — сменить: прежняя «очищенная» раскладка уже не та.
+        _restricted.Clear();
         _tracker.Start();
         _ = RefreshTablesAsync();
     }
@@ -372,6 +377,7 @@ public sealed class HudManager : IDisposable
         _cashProfile = null;
         _mttProfile = null;
         _paired.Clear();
+        _restricted.Clear();
         foreach (var b in _bound.Values)
         {
             foreach (var p in b.Panels.Values) p.Close();
@@ -395,7 +401,9 @@ public sealed class HudManager : IDisposable
     /// раскладка — одна из такой пары и вторая сохранена, для стола берётся подходящая по числу мест.
     /// Размер стола по ходу раздачи не меняется — это не «динамический» HUD.
     /// </summary>
-    private HudProfile Profile(BoundTable b)
+    private HudProfile Profile(BoundTable b) => Compliant(Chosen(b));
+
+    private HudProfile Chosen(BoundTable b)
     {
         var basic = Profile(b.Kind);
         if (!_svc.Settings.AutoProfileBySeats || b.MaxSeats <= 0) return basic;
@@ -406,6 +414,26 @@ public sealed class HudManager : IDisposable
         int at = basic.Name.IndexOf(other, StringComparison.OrdinalIgnoreCase);
         if (at >= 0 && _profiles.Load(basic.Name[..at] + want + basic.Name[(at + other.Length)..]) is { } twin) result = twin;
         return _paired[(b.Kind, small)] = result;
+    }
+
+    private readonly Dictionary<HudProfile, HudProfile> _restricted = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// На румах со «статичным» HUD над столом нельзя показывать статы по картам (сила руки, текстура борда)
+    /// и красить значение больше чем тремя диапазонами. Раскладку собирает пользователь, поэтому такие ячейки
+    /// убираются здесь, а не «по договорённости»: и с панели, и со вкладок попапа, открываемых с неё.
+    /// </summary>
+    private HudProfile Compliant(HudProfile profile)
+    {
+        if (_svc.Host is not { } host) return profile;
+        var policy = RoomHudPolicy.For(host.Db.RoomCode);
+        if (!policy.StaticOnly) return profile;
+        if (_restricted.TryGetValue(profile, out var done)) return done;
+        var safe = HudCompliance.Restrict(profile, host.Hud.Stats, policy.MaxColorRanges, out var report);
+        if (report.Changed)
+            _svc.Log("Hud", $"Раскладка «{profile.Name}» приведена к правилам рума: скрыто ячеек со статами по картам — {report.HiddenCells}, " +
+                            $"снята раскраска более чем в {policy.MaxColorRanges} диапазона — {report.UncoloredCells}. В реплеере после игры видно всё.");
+        return _restricted[profile] = safe;
     }
 
     private HudProfile Resolve(string? name, GameKind kind)
@@ -591,8 +619,14 @@ public sealed class HudManager : IDisposable
                     badge.LastX = bx;
                     badge.LastY = by;
                 }
-                if (!w.Visible && badge.IsVisible) badge.Hide();
-                else if (w.Visible && !badge.IsVisible) badge.Show();
+                // Значок подчиняется тому же правилу, что и панели: над перекрытым столом он висел бы поверх чужого окна.
+                // Точки проверки — по бокам значка, но внутри окна стола (сам значок под курсором проверки не считается).
+                int bcy = Math.Clamp(by + bh / 2, r.Top + 1, r.Bottom - 2);
+                bool hidden = !w.Visible
+                              || !Owns(w.Hwnd, ours, Math.Clamp(bx - 3, r.Left + 1, r.Right - 2), bcy)
+                              || !Owns(w.Hwnd, ours, Math.Clamp(bx + bw + 3, r.Left + 1, r.Right - 2), bcy);
+                if (hidden && badge.IsVisible) badge.Hide();
+                else if (!hidden && !badge.IsVisible) badge.Show();
             }
         }
     }

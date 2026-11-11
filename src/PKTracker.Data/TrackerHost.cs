@@ -39,6 +39,17 @@ public sealed class TrackerSettings
     public bool ReplayerHud { get; set; } = true;
     /// <summary>Реплеер показывает стеки, ставки и банк в больших блайндах, а не в фишках (переключатель «BB» в реплеере).</summary>
     public bool ReplayerInBb { get; set; }
+    /// <summary>
+    /// Ручной импорт принимает и раздачи без вас за столом (наблюдаемые, купленные). Выключено по умолчанию:
+    /// правила большинства румов это запрещают, решение и риск — на игроке.
+    /// </summary>
+    public bool ImportObservedHands { get; set; }
+    /// <summary>
+    /// Ручной импорт принимает раздачи сети GG (GGPoker, PokerOK). Выключено по умолчанию: политика GG запрещает
+    /// сторонним программам импортировать и конвертировать её истории раздач, в том числе выгруженные из PokerCraft.
+    /// Решение и риск — на игроке; при запущенном клиенте GG импорт не идёт и с этим флажком.
+    /// </summary>
+    public bool ImportGgHands { get; set; }
     /// <summary>Раскладка, выбранная значком в реплеере: null — встроенная, особое значение — скрыт.</summary>
     public string? ReplayerProfile { get; set; }
     /// <summary>
@@ -171,7 +182,46 @@ public sealed class TrackerHost : IAsyncDisposable
 
     public HandImporter CreateHandImporter() => new(Db, Stats, HeroNames);
 
-    public FileImporter CreateFileImporter() => new(Db, CreateHandImporter());
+    /// <param name="allowObserved">Принимать раздачи без Hero за столом (<see cref="HandImporter.AllowObserved"/>).</param>
+    /// <param name="allowRestrictedRooms">Принимать раздачи румов, запрещающих сторонний импорт (<see cref="FileImporter.AllowRestrictedRooms"/>).</param>
+    public FileImporter CreateFileImporter(bool allowObserved = false, bool allowRestrictedRooms = false) =>
+        new(Db, new HandImporter(Db, Stats, HeroNames) { AllowObserved = allowObserved }, (room, ct) => ImporterForRoomAsync(room, allowObserved, ct))
+        {
+            AllowRestrictedRooms = allowRestrictedRooms,
+        };
+
+    /// <summary>
+    /// Импортёр для рума, отличного от активного: в выгрузке вперемешку лежат раздачи разных румов,
+    /// и каждая должна попасть под свой рум со своими никами Hero.
+    /// </summary>
+    private async Task<HandImporter?> ImporterForRoomAsync(PKTracker.Parsers.RoomInfo room, bool allowObserved, CancellationToken ct)
+    {
+        short? roomId = null;
+        await using (var conn = await Db.Import.OpenConnectionAsync(ct))
+        {
+            if (room.Network == "WPN")
+            {
+                // Скины WPN по тексту раздачи не различить. Рум однозначен, только если ники Hero заведены
+                // ровно для одного из них; иначе файлы пропускаются с подсказкой, а не приписываются наугад.
+                await using var cmd = new Npgsql.NpgsqlCommand("""
+                    SELECT r.room_id FROM room r
+                     WHERE r.network = 'WPN' AND EXISTS (SELECT 1 FROM hero_account h WHERE h.room_id = r.room_id)
+                    """, conn);
+                var ids = new List<short>();
+                await using var r = await cmd.ExecuteReaderAsync(ct);
+                while (await r.ReadAsync(ct)) ids.Add(r.GetInt16(0));
+                if (ids.Count == 1) roomId = ids[0];
+            }
+            else
+            {
+                await using var cmd = new Npgsql.NpgsqlCommand("SELECT room_id FROM room WHERE code = $1", conn);
+                cmd.Parameters.AddWithValue(room.Code);
+                roomId = (short?)await cmd.ExecuteScalarAsync(ct);
+            }
+        }
+        if (roomId == null) return null;
+        return new HandImporter(Db, Stats, await Heroes.ListAsync(roomId, ct), roomId) { AllowObserved = allowObserved };
+    }
 
     public HandHistoryWatcher CreateWatcher(string folder) => new(Db, CreateHandImporter(), folder);
 

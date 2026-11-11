@@ -28,7 +28,7 @@ public sealed partial class StarsHandParser : IHandHistoryParser
     private static partial Regex HandStartRx();
 
     // PokerStars Hand #200000000001: Tournament #3000000001, $9.00+$1.00 USD Hold'em No Limit - Level IX (400/800) - 2024/08/23 21:07:17 ET
-    [GeneratedRegex(@"^PokerStars (?:Zoom |Home Game )?(?:Hand|Game) #(\d+): +Tournament #(\d+), (.*?) ?(Hold'em No Limit|Hold'em Pot Limit|Hold'em Limit) - (?:Match Round \w+, )?Level ?(\w*) \(([\d.,$€£]+)/([\d.,$€£]+)\) - (.+)$")]
+    [GeneratedRegex(@"^PokerStars (?:Zoom |Home Game )?(?:Hand|Game) #(\d+): +Tournament #([\w-]+), (.*?) ?(Hold'em No Limit|Hold'em Pot Limit|Hold'em Limit) - (?:Match Round \w+, )?Level ?(\w*) \(([\d.,$€£]+)/([\d.,$€£]+)\) - (.+)$")]
     private static partial Regex TourneyHeaderRx();
 
     // PokerStars Hand #123: Hold'em No Limit ($0.05/$0.10 USD) - 2020/01/01 12:00:00 ET
@@ -77,7 +77,8 @@ public sealed partial class StarsHandParser : IHandHistoryParser
     private static partial Regex BoardRx();
 
     // Seat 1: name (small blind) collected (6900) | showed [..] and won (123) with ... | folded before Flop (didn't bet)
-    [GeneratedRegex(@"^((?:\((?:button|small blind|big blind)\) )*)(?:folded (?:before Flop|on the Flop|on the Turn|on the River)(?: \(didn't bet\))?|collected \((\$?[\d.,]+|€[\d.,]+)\)|showed \[([^\]]*)\] and (?:won \((\$?[\d.,]+|€[\d.,]+)\)|lost)(?: with .*)?|mucked(?: \[([^\]]*)\])?)$")]
+    // Клоны формата пишут и усечённо: «showed [..]» без исхода и «and lost with» без названия комбинации.
+    [GeneratedRegex(@"^((?:\((?:button|small blind|big blind)\) )*)(?:folded (?:before Flop|on the Flop|on the Turn|on the River)(?: \(didn't bet\))?|collected \((\$?[\d.,]+|€[\d.,]+)\)|showed \[([^\]]*)\](?: and (?:won \((\$?[\d.,]+|€[\d.,]+)\)|lost))?(?: with.*)?|mucked(?: \[([^\]]*)\])?)$")]
     private static partial Regex SummarySeatRx();
 
     // RIT: «showed [..] and won (100) with ..., and won (100) with ...» — суммы всех досок
@@ -311,7 +312,7 @@ public sealed partial class StarsHandParser : IHandHistoryParser
         if (m.Success)
         {
             h.ExternalHandId = long.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
-            h.TournamentId = long.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+            h.TournamentId = HhText.TournamentId(m.Groups[2].Value);
             h.GameVariant = Variant(m.Groups[4].Value);
             // Клоны формата (Chico) пишут «Level (625/1250)» без номера уровня.
             h.TournamentLevel = m.Groups[5].Value.Length > 0 ? HhText.RomanOrInt(m.Groups[5].Value) : null;
@@ -420,11 +421,13 @@ public sealed partial class StarsHandParser : IHandHistoryParser
             var m = SummarySeatRx().Match(rest);
             // Run It Twice: «… and won (x) with …, and won (y) with …». Общий шаблон проглатывает второй выигрыш
             // в хвост «with …», поэтому такие строки разбираем отдельно и суммируем все «won (…)».
-            if (m.Success && (h.Flags & HandFlags.RunItTwice) != 0 && WonRx().Matches(rest).Count > 1) m = Match.Empty;
+            // Клоны формата так же перечисляют выигрыш из основного и побочных банков: «won (main) …, and won (side) …».
+            int wins = WonRx().Matches(rest).Count;
+            if (m.Success && wins > 1) m = Match.Empty;
             if (!m.Success)
             {
                 // RIT: «showed [..] and won (x) with …, and won (y) with …» / «… and lost with …, and won (y) …»
-                if (rest.Contains("showed [", StringComparison.Ordinal) && (h.Flags & HandFlags.RunItTwice) != 0)
+                if (rest.Contains("showed [", StringComparison.Ordinal) && ((h.Flags & HandFlags.RunItTwice) != 0 || wins > 1))
                 {
                     seat.Dealt = true;
                     var c = BracketRx().Match(rest);

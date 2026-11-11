@@ -13,7 +13,7 @@ using PKTracker.Engine.Stats;
 
 namespace PKTracker.App;
 
-public sealed record SessionVm(DateTime StartLocal, string DurationText, long Hands, int Tables, double Net, double Bb100);
+public sealed record SessionVm(DateTime StartLocal, string DurationText, long Hands, int Tables, int Tournaments, string NetText, string Bb100Text);
 
 public sealed record TournamentVm(DateTime? StartLocal, string Name, long Hands, int Entries, string BuyInText, string FinishText,
     string WonText, string ProfitText, string? Currency, string DollarEvText, string ChipText, string ChipEvText, int AllIns,
@@ -27,13 +27,24 @@ public sealed record TournamentFormatVm(string Format, int Count, int WithHands,
 public sealed record HandVm(HandRow Row, DateTime PlayedLocal, string NetText, double NetBb, string PotText, string EvText)
 {
     public string PositionText => Row.Position == Position.None ? "—" : Row.Position.ToString();
+    /// <summary>Блайнды: в турнире — с разделителем разрядов, «80 000/160 000» читается, «80000/160000» — нет.</summary>
+    public string StakesText => Row.Kind == GameKind.Cash ? Row.Stakes : $"{Row.Sb / 100:N0}/{Row.Bb / 100:N0}";
+}
+
+/// <summary>Активный стол во вкладке HUD: время последней раздачи — местное, как и всё остальное в интерфейсе.</summary>
+public sealed record ActiveTableVm(ActiveTable Table)
+{
+    public string TableName => Table.TableName;
+    public string Kind => Table.Kind == GameKind.Cash ? "кеш" : "турнир";
+    public int MaxSeats => Table.MaxSeats;
+    public DateTime LastHandLocal => Table.LastHandAt.ToLocalTime();
 }
 
 public sealed record StatVm(string Title, string Value, long Sample, string Code);
 
 public sealed record NoteVm(string Text);
 
-public sealed record LeakVm(string Title, string HeroText, long HeroSample, string PoolText, long PoolSample, string DiffText, string Verdict, double Score);
+public sealed record LeakVm(string Title, string Code, string HeroText, long HeroSample, string PoolText, long PoolSample, string DiffText, string Verdict, double Score);
 
 public sealed record StatDefVm(string Code, string Title, StatScope Scope, int Version, StatDefinition Def);
 
@@ -44,7 +55,10 @@ public partial class MainWindow : Window
     private int _handsPage;
     private const int HandsPageSize = 200;
     private PlayerSearchRow? _selectedPlayer;
-    private bool _overviewAutoSwitched;
+    /// <summary>База, для которой вид игры по умолчанию уже выбран: при смене базы выбор делается заново.</summary>
+    private string? _kindChosenFor;
+    /// <summary>Идёт расстановка умолчаний: смена выбора в списках — не действие пользователя, перезагружать вкладки не нужно.</summary>
+    private bool _applyingDefaults;
 
     public MainWindow(AppServices svc)
     {
@@ -113,24 +127,52 @@ public partial class MainWindow : Window
     private async void Tabs_SelectionChanged(object sender, SelectionChangedEventArgs? e)
     {
         if (e != null && e.OriginalSource != Tabs) return;
-        if (Host == null) return;
+        if (Host is not { } current) return;
         try
         {
+            await EnsureDefaultKindAsync(current);
             if (Tabs.SelectedItem == OverviewTab) await LoadOverviewAsync();
             else if (Tabs.SelectedItem == SessionsTab) await LoadSessionsAsync();
             else if (Tabs.SelectedItem == TournamentsTab) await LoadTournamentsAsync();
-            else if (Tabs.SelectedItem == ReportsTab) await Reports.ReloadAsync();
+            else if (Tabs.SelectedItem == ReportsTab) await Reports.ReloadAsync(refreshCatalog: true);
             else if (Tabs.SelectedItem == AnalyticsTab) await Analytics.ReloadAsync();
             else if (Tabs.SelectedItem == HandsTab && HandsGrid.ItemsSource == null) await LoadHandsAsync();
+            else if (Tabs.SelectedItem == PlayersTab && PlayersGrid.ItemsSource == null) await SearchPlayersAsync();
             else if (Tabs.SelectedItem == HudTab) { LoadHudTab(); LoadProfileEditor(); ReloadHudProfileList(); }
             else if (Tabs.SelectedItem == LeaksTab) await LoadLeaksAsync();
-            else if (Tabs.SelectedItem == ImportTab) { await LoadHeroesAsync(); await LoadImportErrorsAsync(); }
+            else if (Tabs.SelectedItem == ImportTab) { await LoadDatabasesAsync(); await LoadHeroesAsync(); await LoadImportErrorsAsync(); }
             else if (Tabs.SelectedItem == StatsTab) await LoadStatDefsAsync();
         }
         catch (Exception ex)
         {
             _svc.Log("Db", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Вид игры по умолчанию — тот, в котором у Hero больше раздач. Иначе турнирный игрок на каждой вкладке
+    /// («Сессии», «Игроки», «Ликфайндер», «Отчёты»…) видит пустой «Кеш» и переключает список руками.
+    /// Выбирается один раз на базу; дальше списки остаются такими, какими их оставил пользователь.
+    /// </summary>
+    private async Task EnsureDefaultKindAsync(TrackerHost host)
+    {
+        string db = _svc.Settings.ConnectionString;
+        if (_kindChosenFor == db) return;
+        _kindChosenFor = db;
+        var (cash, tourney) = await Bg(() => new ReportRepository(host.Db).HeroHandCountsAsync());
+        if (cash == 0 && tourney == 0) return;   // пустая база: выбирать не из чего
+        bool mtt = tourney > cash;
+        _applyingDefaults = true;
+        try
+        {
+            foreach (var box in new[] { OverviewKind, SessionsKind, PlayerKind, LeaksKind, ProfileKind }) box.SelectedIndex = mtt ? 1 : 0;
+            Reports.SetDefaultKind(mtt ? GameKind.Mtt : GameKind.Cash);
+            Analytics.SetDefaultKind(mtt ? GameKind.Mtt : GameKind.Cash);
+        }
+        finally { _applyingDefaults = false; }
+        // Данные прежней базы на уже открывавшихся вкладках не должны остаться на экране после переключения.
+        HandsGrid.ItemsSource = null;
+        PlayersGrid.ItemsSource = null;
     }
 
     // Все обращения к БД — через Task.Run: UI-поток не должен ждать запрос даже частично (§10.2)
@@ -145,7 +187,7 @@ public partial class MainWindow : Window
 
     private async void OverviewKind_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (IsLoaded && Host != null) await LoadOverviewAsync();
+        if (IsLoaded && Host != null && !_applyingDefaults) await LoadOverviewAsync();
     }
 
     private async void RefreshOverview_Click(object sender, RoutedEventArgs e) => await LoadOverviewAsync();
@@ -158,37 +200,33 @@ public partial class MainWindow : Window
         int gap = _svc.Settings.SessionGapMinutes;
         var reports = new ReportRepository(host.Db);
         var overview = await Bg(() => reports.OverviewAsync(kind, gap));
-        // Первый показ: если в выбранном виде игры раздач нет, а в другом есть — переключаемся сами,
-        // чтобы турнирный игрок не видел пустой «Кеш» при каждом запуске.
-        if (overview.Hands == 0 && !_overviewAutoSwitched)
-        {
-            _overviewAutoSwitched = true;
-            var other = kind == GameKind.Cash ? GameKind.Mtt : GameKind.Cash;
-            var alt = await Bg(() => reports.OverviewAsync(other, gap));
-            if (alt.Hands > 0)
-            {
-                OverviewKind.SelectedIndex = other == GameKind.Mtt ? 1 : 0;
-                return; // смена выбора сама перезагрузит обзор
-            }
-        }
         var graph = await Bg(() => reports.GraphAsync(kind));
         var byPos = await Bg(() => reports.ByPositionAsync(kind));
         var byLimit = kind == GameKind.Cash ? await Bg(() => reports.ByLimitAsync()) : new List<GroupRow>();
         var bySize = await Bg(() => reports.ByTableSizeAsync(kind));
 
         KpiHands.Text = overview.Hands.ToString("N0");
-        KpiNetLabel.Text = kind == GameKind.Cash ? "Выигрыш" : "Фишки (chip EV, не деньги)";
+        KpiNetLabel.Text = kind == GameKind.Cash ? "Выигрыш" : "Фишки (не деньги)";
         KpiNet.Text = Money(overview.NetWon, kind);
         KpiBb100.Text = overview.Bb100.ToString("F2");
         KpiEvBb100.Text = overview.EvBb100.ToString("F2");
-        KpiEvLabel.Text = (kind == GameKind.Cash ? "All-in EV bb/100 (" : "Chip EV bb/100 (") + Money(overview.EvNetWon, kind) + ")";
+        // Сумма EV — в подсказке и в строке над карточками: в подпись карточки она не помещалась и обрезалась.
+        KpiEvLabel.Text = kind == GameKind.Cash ? "All-in EV bb/100" : "Chip EV bb/100";
+        KpiEvLabel.ToolTip = KpiEvBb100.ToolTip = (kind == GameKind.Cash ? "All-in EV: " : "Chip EV: ") + Money(overview.EvNetWon, kind)
+                                                  + (kind == GameKind.Cash ? "" : " фишек");
         KpiRake.Text = kind == GameKind.Cash ? $"${overview.Rake / 100.0:N2}" : "—";
         KpiVpip.Text = $"{overview.VpipPct:F0} / {overview.PfrPct:F0}";
         KpiHours.Text = $"{overview.Hours:F1} / {overview.Sessions}";
         OverviewNote.Text = kind == GameKind.Cash
             ? $"На шоудауне {Money(overview.WonAtSd, kind)}, без шоудауна {Money(overview.WonNonSd, kind)}, " +
               $"удача в олл-инах {Money(overview.NetWon - overview.EvNetWon, kind)} ({overview.AllInHands} олл-инов)"
-            : "Турнирные фишки и деньги не смешиваются: денежный результат — во вкладке «Турниры» (из .ots).";
+            : $"Chip EV {Money(overview.EvNetWon, kind)}, удача в олл-инах {Money(overview.NetWon - overview.EvNetWon, kind)} фишек " +
+              $"({overview.AllInHands:N0} олл-инов). Деньги — во вкладке «Турниры»: фишки разных турниров в доллары не складываются.";
+        if (overview.Hands == 0)
+            OverviewNote.Text = Host?.HeroNames.Count == 0
+                ? "Раздач нет: добавьте свой ник и загрузите историю во вкладке «Импорт»."
+                : (kind == GameKind.Cash ? "В кеше" : "В турнирах") + " раздач нет — выберите другой вид игры или загрузите историю во вкладке «Импорт».";
+        ByLimitPanel.Visibility = kind == GameKind.Cash ? Visibility.Visible : Visibility.Collapsed;
 
         var plot = NetPlot.Plot;
         plot.Clear();
@@ -246,9 +284,28 @@ public partial class MainWindow : Window
         var host = Host;
         if (host == null) return;
         int gap = _svc.Settings.SessionGapMinutes;
-        var rows = await Bg(() => new ReportRepository(host.Db).SessionsAsync(gap));
+        bool mtt = SessionsKind.SelectedIndex == 1;
+        var rows = await Bg(() => new ReportRepository(host.Db).SessionsAsync(gap, mtt ? GameKind.Mtt : GameKind.Cash));
+        // В турнире итог сессии — в больших блайндах: фишки разных турниров и уровней между собой не складываются.
         SessionsGrid.ItemsSource = rows.Select(r => new SessionVm(r.Start.ToLocalTime(),
-            $"{(int)r.Duration.TotalHours}:{r.Duration.Minutes:00}", r.Hands, r.Tables, r.NetWon / 100.0, r.Bb100)).ToList();
+            $"{(int)r.Duration.TotalHours}:{r.Duration.Minutes:00}", r.Hands, r.Tables, r.Tournaments,
+            mtt ? (r.NetBbX100 / 100.0).ToString("+#,0.0;-#,0.0;0") : Money(r.NetWon, GameKind.Cash),
+            r.Bb100.ToString("+0.0;-0.0;0.0"))).ToList();
+        SessionsTourneysColumn.Visibility = mtt ? Visibility.Visible : Visibility.Collapsed;
+        SessionsNetColumn.Header = mtt ? "Итог, bb" : "Выигрыш";
+        long hands = rows.Sum(r => r.Hands);
+        double hours = rows.Sum(r => r.Duration.TotalHours);
+        SessionsNote.Text = rows.Count == 0
+            ? (mtt ? "В турнирах" : "В кеше") + " раздач нет. Перерыв между раздачами больше " + gap + " мин начинает новую сессию."
+            : $"Сессий: {rows.Count:N0} · часов: {hours:N1} · раздач: {hands:N0} · в среднем {hands / (double)rows.Count:N0} раздач и " +
+              $"{hours * 60 / rows.Count:N0} мин на сессию. Перерыв больше {gap} мин — новая сессия (меняется в настройках).";
+    }
+
+    private async void SessionsKind_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || Host == null || _applyingDefaults) return;
+        try { await LoadSessionsAsync(); }
+        catch (Exception ex) { _svc.Log("Db", "Сессии: " + ex.Message); }
     }
 
     private List<TournamentVm> _tournaments = new();
@@ -319,7 +376,7 @@ public partial class MainWindow : Window
         long chipLuck = evs.Values.Sum(e => e.ChipLuck);
         TournamentSummaryText.Text = withResult.Count == 0
             ? $"Турниров с раздачами: {rows.Count}. Удача в олл-инах (факт − Chip EV): {TourneyChips(chipLuck)} фишек. " +
-              "Для денежного результата и $EV загрузите итоги (.ots) кнопкой выше — в HH нет ни призовых, ни баунти, ни места (§0.5)."
+              "Для денежного результата и $EV загрузите итоги турниров (.ots) — в hand history нет ни призовых, ни баунти, ни места."
             : $"С итогами: {withResult.Count}  Затраты: {TourneyCash(cost)}  Выигрыш: {TourneyCash(won)}  Профит: {TourneyCash(won - cost)}  " +
               $"ROI: {(cost > 0 ? (won - cost) * 100.0 / cost : 0):F1}%  ITM: {itm * 100.0 / withResult.Count:F1}%  " +
               $"Средний финиш: {avgFinish}  Баунти: {TourneyCash(bounties)}  " +
@@ -495,7 +552,12 @@ public partial class MainWindow : Window
     private async void TournamentsRefresh_Click(object sender, RoutedEventArgs e)
     {
         try { await LoadTournamentsAsync(); }
-        catch (Exception ex) { TournamentLoadStatus.Text = "Ошибка: " + ex.Message; _svc.Log("Db", ex.Message); }
+        catch (Exception ex)
+        {
+            TournamentLoadStatus.Visibility = Visibility.Visible;
+            TournamentLoadStatus.Text = "Ошибка: " + ex.Message;
+            _svc.Log("Db", ex.Message);
+        }
     }
 
     private void TournamentBrowse_Click(object sender, RoutedEventArgs e)
@@ -511,10 +573,13 @@ public partial class MainWindow : Window
     {
         var host = Host;
         var folder = TournamentFolderBox.Text.Trim();
+        TournamentLoadStatus.Visibility = Visibility.Visible;
         if (host == null) { TournamentLoadStatus.Text = "База ещё не готова — см. статус внизу окна."; return; }
-        if (folder.Length == 0 || !System.IO.Directory.Exists(folder)) { TournamentLoadStatus.Text = "Папка не найдена."; return; }
+        if (folder.Length == 0) { TournamentLoadStatus.Text = "Укажите папку с итогами турниров (*.ots) — кнопка «Обзор…»."; return; }
+        if (!System.IO.Directory.Exists(folder)) { TournamentLoadStatus.Text = "Папка не найдена: " + folder; return; }
 
         TournamentLoadButton.IsEnabled = false;
+        TournamentProgressBar.Visibility = Visibility.Visible;
         var progress = new Progress<ImportProgress>(p =>
         {
             TournamentProgressBar.Maximum = Math.Max(1, p.FilesTotal);
@@ -547,6 +612,7 @@ public partial class MainWindow : Window
         finally
         {
             TournamentLoadButton.IsEnabled = true;
+            TournamentProgressBar.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -580,7 +646,7 @@ public partial class MainWindow : Window
         }
         else rows = await Bg(() => new ReportRepository(host.Db).HeroHandsAsync(kind, pos, HandsPageSize, offset));
         HandsGrid.ItemsSource = rows.Select(r => new HandVm(r, r.PlayedAt.ToLocalTime(), Money(r.NetWon, r.Kind), r.NetBbX100 / 100.0,
-            r.Kind == GameKind.Cash ? $"${r.TotalPot / 100.0:0.00}" : (r.TotalPot / 100).ToString(),
+            r.Kind == GameKind.Cash ? $"${r.TotalPot / 100.0:N2}" : (r.TotalPot / 100).ToString("N0"),
             r.EvNetWon is { } ev ? Money(ev, r.Kind) : "")).ToList();
         HandsPageText.Text = rows.Count == 0 ? $"стр. {_handsPage + 1}: ничего не найдено{scanInfo}" : $"стр. {_handsPage + 1} ({offset + 1}–{offset + rows.Count}){scanInfo}";
     }
@@ -599,7 +665,29 @@ public partial class MainWindow : Window
         await LoadHandsAsync();
     }
 
+    /// <summary>Смена вида игры или позиции сразу показывает раздачи — отдельно жать «Показать» не нужно.</summary>
+    private async void HandsSelector_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded || Host == null || Tabs.SelectedItem != HandsTab) return;
+        _handsPage = 0;
+        try { await LoadHandsAsync(); }
+        catch (Exception ex) { _svc.Log("Db", "Раздачи: " + ex.Message); }
+    }
+
     private void HandsGrid_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        // Двойной клик по заголовку колонки или полосе прокрутки — не просьба открыть раздачу.
+        if (ItemsControl.ContainerFromElement(HandsGrid, e.OriginalSource as DependencyObject) is DataGridRow) OpenSelectedHand();
+    }
+
+    private void HandsGrid_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter) return;
+        OpenSelectedHand();
+        e.Handled = true;   // иначе Enter в таблице ещё и сдвинет выделение на строку вниз
+    }
+
+    private void OpenSelectedHand()
     {
         if (HandsGrid.SelectedItem is HandVm vm && Host != null)
             new ReplayerWindow(Host, vm.Row.HandPk, _svc.Settings) { Owner = this }.Show();
@@ -624,8 +712,23 @@ public partial class MainWindow : Window
         var host = Host;
         if (host == null) return;
         var q = PlayerSearchBox.Text.Trim();
-        var rows = await Bg(() => new ReportRepository(host.Db).SearchPlayersAsync(q));
-        var notes = await Bg(() => host.Notes.GetAllAsync());
+        // В большой базе список собирается секунду-другую: пустая таблица без пояснения выглядит как «ничего не нашлось».
+        PlayerSearchButton.IsEnabled = false;
+        PlayerSearchButton.Content = "Ищу…";
+        List<PlayerSearchRow> rows;
+        Dictionary<long, PKTracker.Data.Notes.PlayerNote> notes;
+        try
+        {
+            rows = await Bg(() => new ReportRepository(host.Db).SearchPlayersAsync(q));
+            notes = await Bg(() => host.Notes.GetAllAsync());
+        }
+        finally
+        {
+            PlayerSearchButton.Content = "Найти";
+            PlayerSearchButton.IsEnabled = true;
+        }
+        if (rows.Count == 0 && _selectedPlayer == null)
+            PlayerTitle.Text = q.Length == 0 ? "В базе пока нет игроков" : $"Ников, начинающихся на «{q}», нет";
         PlayersGrid.ItemsSource = rows.Select(r =>
         {
             var n = notes.GetValueOrDefault(r.PlayerId);
@@ -674,22 +777,59 @@ public partial class MainWindow : Window
 
     private async void PlayerKind_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (IsLoaded) await LoadPlayerAsync();
+        if (IsLoaded && !_applyingDefaults) await LoadPlayerAsync();
+    }
+
+    /// <summary>Все статы выбранного игрока; в таблицу идут отобранные фильтром.</summary>
+    private List<StatVm> _playerStats = new();
+
+    private void PlayerStatFilter_Changed(object sender, RoutedEventArgs e)
+    {
+        if (IsLoaded) ShowPlayerStats();
+    }
+
+    /// <summary>
+    /// Статов в базе сотни, и у оппонента с сотней раздач большинство без единого случая: без фильтра
+    /// нужную строку приходится искать прокруткой среди прочерков.
+    /// </summary>
+    private void ShowPlayerStats()
+    {
+        string q = PlayerStatFilter.Text.Trim();
+        bool nonEmpty = PlayerStatNonEmpty.IsChecked == true;
+        var shown = _playerStats.Where(s => (!nonEmpty || s.Sample > 0)
+            && (q.Length == 0 || s.Title.Contains(q, StringComparison.OrdinalIgnoreCase) || s.Code.Contains(q, StringComparison.OrdinalIgnoreCase))).ToList();
+        PlayerStatsGrid.ItemsSource = shown;
+        PlayerStatCount.Text = _playerStats.Count == 0 ? "" : $"{shown.Count:N0} из {_playerStats.Count:N0}";
+    }
+
+    private void NoteBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter) AddNote_Click(sender, e);
     }
 
     private async Task LoadPlayerAsync()
     {
         var host = Host;
         var p = _selectedPlayer;
-        if (host == null || p == null) return;
+        if (host == null || p == null)
+        {
+            PlayerTitle.Text = "Выберите игрока";
+            _playerStats = new();
+            ShowPlayerStats();
+            NotesList.ItemsSource = null;
+            return;
+        }
         var kind = PlayerKind.SelectedIndex == 1 ? GameKind.Mtt : GameKind.Cash;
         PlayerTitle.Text = p.Nickname;
         var set = await Bg(() => host.Hud.GetAsync(p.PlayerId, kind));
-        PlayerStatsGrid.ItemsSource = host.Stats.Select(st =>
+        _playerStats = host.Stats.Select(st =>
         {
             var (v, n) = set.Evaluate(st.Code);
-            return new StatVm(st.Definition.Title, v is { } x ? x.ToString("F" + Math.Max(st.Definition.Format.Decimals, st.Code == "net_bb" ? 0 : 1)) : "–", n, st.Code);
+            // Доли — с десятой, счётчики и суммы — как заданы в определении стата: «250», а не «250.0».
+            int dec = st.Definition.Format.Percent ? Math.Max(st.Definition.Format.Decimals, 1) : st.Definition.Format.Decimals;
+            return new StatVm(st.Definition.Title, v is { } x ? x.ToString("N" + dec) : "–", n, st.Code);
         }).ToList();
+        ShowPlayerStats();
         var notes = await Bg(() => new ReportRepository(host.Db).NotesAsync(p.PlayerId));
         NotesList.ItemsSource = notes.Select(n => new NoteVm($"{n.CreatedAt.ToLocalTime():dd.MM.yy HH:mm}  {n.Body}")).ToList();
     }
@@ -742,7 +882,9 @@ public partial class MainWindow : Window
 
     private async void LeaksKind_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (IsLoaded && Host != null) await LoadLeaksAsync();
+        if (!IsLoaded || Host == null || _applyingDefaults) return;
+        try { await LoadLeaksAsync(); }
+        catch (Exception ex) { _svc.Log("Db", "Ликфайндер: " + ex.Message); }
     }
 
     private async Task LoadLeaksAsync()
@@ -751,9 +893,12 @@ public partial class MainWindow : Window
         if (host == null) return;
         var kind = LeaksKind.SelectedIndex == 1 ? GameKind.Mtt : GameKind.Cash;
         var leaks = await Bg(() => LeakFinder.ComputeAsync(host, kind));
-        var rows = leaks.Select(l => new LeakVm(l.Title, l.Hero.ToString("F" + l.Decimals), l.HeroSample, l.Pool.ToString("F" + l.Decimals),
+        var rows = leaks.Select(l => new LeakVm(l.Title, l.Code, l.Hero.ToString("F" + l.Decimals), l.HeroSample, l.Pool.ToString("F" + l.Decimals),
             l.PoolSample, FormatDiff(l.Diff, l.Decimals), l.Verdict, l.Score)).ToList();
         LeaksGrid.ItemsSource = rows;
+        LeaksNote.Text = rows.Count == 0
+            ? (kind == GameKind.Cash ? "В кеше" : "В турнирах") + " сравнивать нечего: нет ваших раздач или в базе нет других игроков. Выберите другой вид игры."
+            : "Ваши статы против пула — всех остальных игроков из вашей же базы. Сверху — самые значимые отклонения; «мало данных» — выборки для вывода не хватает.";
 
         static string FormatDiff(double diff, int dec)
         {
@@ -789,8 +934,21 @@ public partial class MainWindow : Window
         ProfileAvailable.Items.Clear();
         foreach (var st in host.Stats.Where(s => s.Definition.Value == null || s.Code == "hands").Where(s => !codes.Contains(s.Code)))
             ProfileAvailable.Items.Add(new ProfileItem(st.Code, $"{st.Definition.Title}  ({st.Code})"));
-        ProfileStatus.Text = "";
+        ShowLegacyListHint();
         UpdateProfilePreview();
+    }
+
+    /// <summary>
+    /// Список статов — отдельная раскладка. Если выбрана другая, его правка на панелях не отражается:
+    /// без подсказки это выглядит как «сохранил, а HUD не изменился».
+    /// </summary>
+    private void ShowLegacyListHint(string prefix = "")
+    {
+        string? current = ProfileGameKind == GameKind.Cash ? _svc.Settings.CashProfile : _svc.Settings.MttProfile;
+        ProfileStatus.Text = prefix + (current == HudProfile.LegacyName
+            ? "Этот список сейчас показывается на панелях."
+            : $"Сейчас выбрана раскладка «{(string.IsNullOrEmpty(current) ? BuiltinProfileItem : current == ProfileBadge.Hidden ? HiddenProfileItem : current)}» — " +
+              $"список на панели не влияет. Чтобы он заработал, выберите раскладку «{HudProfile.LegacyName}».");
     }
 
     private void UpdateProfilePreview()
@@ -855,6 +1013,7 @@ public partial class MainWindow : Window
         else _svc.Settings.MttProfile = name;
         _svc.Settings.Save();
         _svc.Hud.ReloadProfile();
+        ShowLegacyListHint();
     }
 
     private void HudEditor_Click(object sender, RoutedEventArgs e)
@@ -875,7 +1034,7 @@ public partial class MainWindow : Window
 
     private void ProfileKind_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (!IsLoaded) return;
+        if (!IsLoaded || _applyingDefaults) return;
         LoadProfileEditor();
         ReloadHudProfileList();
     }
@@ -929,7 +1088,7 @@ public partial class MainWindow : Window
         SetCashStats.Text = s.CashStats;
         SetMttStats.Text = s.MttStats;
         _svc.Hud.ReloadProfile();
-        ProfileStatus.Text = "Сохранено, панели обновлены.";
+        ShowLegacyListHint("Сохранено. ");
     }
 
     private void LoadHudTab()
@@ -938,7 +1097,21 @@ public partial class MainWindow : Window
         SessionWidgetBox.IsChecked = _svc.Settings.SessionWidget;
         AutoProfileBox.IsChecked = _svc.Settings.AutoProfileBySeats;
         HudWindowsGrid.ItemsSource = _svc.Hud.Status();
-        ActiveTablesGrid.ItemsSource = _svc.Hud.ActiveTables;
+        ActiveTablesGrid.ItemsSource = _svc.Hud.ActiveTables.OrderByDescending(t => t.LastHandAt).Select(t => new ActiveTableVm(t)).ToList();
+        ActiveTablesHeader.Text = $"Активные столы (раздача за последние {_svc.Settings.HudActiveTableHours:0.##} ч — меняется в настройках)";
+        // Пустые таблицы без объяснения читаются как «HUD сломан»: говорим, чего именно не хватает.
+        var windows = _svc.Hud.Status();
+        string process = _svc.Settings.ClientProcessName;
+        HudHint.Text = Host is { } host && !RoomHudPolicy.For(host.Db.RoomCode).HudAllowed
+            ? "HUD над столами этого рума выключен его правилами — см. вкладку «Настройки»."
+            : !_svc.Hud.Enabled ? "HUD выключен: панели над столами не показываются."
+            : windows.Count == 0
+                ? $"Окна столов не найдены: клиент «{process}» не запущен или столы не открыты. Имя процесса и класс окна задаются на вкладке «Настройки»."
+            : _svc.Hud.ActiveTables.Count == 0
+                ? "Окна столов найдены, но свежих раздач за этими столами в базе нет: панели появятся после первой сыгранной раздачи (нужен авто-импорт)."
+            : windows.Any(w => w.TableName == null)
+                ? "Часть окон не привязана к столу: выберите окно слева, стол справа и нажмите «Привязать выбранное окно к выбранному столу»."
+                : "Панели показываются над привязанными столами. Статы — только по вашим раздачам (правила рума). Панель двигается правой кнопкой мыши.";
     }
 
     private void HudEnabled_Click(object sender, RoutedEventArgs e) => _svc.Hud.Enabled = HudEnabledBox.IsChecked == true;
@@ -951,7 +1124,7 @@ public partial class MainWindow : Window
 
     private void HudBind_Click(object sender, RoutedEventArgs e)
     {
-        if (HudWindowsGrid.SelectedItem is Hud.HudTableStatus w && ActiveTablesGrid.SelectedItem is ActiveTable t)
+        if (HudWindowsGrid.SelectedItem is Hud.HudTableStatus w && ActiveTablesGrid.SelectedItem is ActiveTableVm { Table: var t })
         {
             _svc.Hud.BindManually(w.Hwnd, t.TableInstanceId);
             LoadHudTab();
@@ -961,86 +1134,7 @@ public partial class MainWindow : Window
 
     // ── Импорт ─────────────────────────────────────────────────────────────
 
-    private async Task LoadHeroesAsync()
-    {
-        var host = Host;
-        if (host == null) return;
-        HeroList.ItemsSource = await Bg(() => host.Heroes.ListAsync());
-    }
-
-    private async void HeroAdd_Click(object sender, RoutedEventArgs e)
-    {
-        var host = Host;
-        var nick = HeroBox.Text.Trim();
-        if (host == null || nick.Length == 0) return;
-        await Task.Run(async () => { await host.Heroes.AddAsync(nick); await host.ReloadAsync(); });
-        HeroBox.Clear();
-        await LoadHeroesAsync();
-        _svc.Log("Import", $"Добавлен Hero: {nick}");
-    }
-
-    private async void HeroRemove_Click(object sender, RoutedEventArgs e)
-    {
-        var host = Host;
-        if (host == null || HeroList.SelectedItem is not string nick) return;
-        await Task.Run(async () => { await host.Heroes.RemoveAsync(nick); await host.ReloadAsync(); });
-        await LoadHeroesAsync();
-    }
-
-    private void ImportBrowse_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "Папка с hand history (HH*.txt) и итогами турниров (*.ots)" };
-        if (dlg.ShowDialog(this) == true) ImportFolderBox.Text = dlg.FolderName;
-    }
-
-    private async void Import_Click(object sender, RoutedEventArgs e)
-    {
-        var host = Host;
-        var folder = ImportFolderBox.Text.Trim();
-        if (host == null) return;
-        if (!System.IO.Directory.Exists(folder)) { ImportStatusText.Text = "Папка не найдена."; return; }
-        if (host.HeroNames.Count == 0) { ImportStatusText.Text = "Сначала добавьте свой ник (Hero): импорт чужих рук запрещён правилами рума."; return; }
-
-        _importCts = new CancellationTokenSource();
-        var ct = _importCts.Token;
-        ImportButton.IsEnabled = false;
-        ImportCancelButton.IsEnabled = true;
-        var progress = new Progress<ImportProgress>(p =>
-        {
-            ImportProgressBar.Maximum = Math.Max(1, p.FilesTotal);
-            ImportProgressBar.Value = p.FilesDone;
-            ImportStatusText.Text = $"Файлов {p.FilesDone}/{p.FilesTotal}  рук {p.Hands:N0}  импортировано {p.Imported:N0}  дубликатов {p.Duplicates:N0}  " +
-                                    $"ошибок {p.Errors}  отклонено файлов {p.RejectedFiles}  {p.HandsPerSecond:F0} рук/с" +
-                                    (p.Eta is { } eta ? $"  осталось ~{eta:mm\\:ss}" : "");
-        });
-        try
-        {
-            var rep = await Task.Run(() => host.CreateFileImporter().ImportFolderAsync(folder, progress, ct), ct);
-            ImportStatusText.Text = $"Готово за {rep.Elapsed.TotalSeconds:F1} c: раздач {rep.Hands:N0}, импортировано {rep.Imported:N0}, " +
-                                    $"дубликатов {rep.Duplicates:N0}, ошибок {rep.Errors}, отклонено файлов {rep.RejectedFiles}, турниров {rep.Tournaments}." +
-                                    (rep.Messages.Count > 0 ? "\n" + string.Join("\n", rep.Messages.Take(10)) : "");
-            _svc.Log("Import", ImportStatusText.Text);
-            host.Hud.Invalidate(rep.AffectedPlayers);
-            await _svc.Hud.RefreshTablesAsync();
-            await LoadImportErrorsAsync();
-        }
-        catch (OperationCanceledException)
-        {
-            ImportStatusText.Text = "Импорт отменён (уже записанные пачки сохранены, повторный импорт продолжит без дублей).";
-        }
-        catch (Exception ex)
-        {
-            ImportStatusText.Text = "Ошибка: " + ex.Message;
-            _svc.Log("Import", ex.ToString());
-        }
-        finally
-        {
-            ImportButton.IsEnabled = true;
-            ImportCancelButton.IsEnabled = false;
-        }
-    }
-
-    private void ImportCancel_Click(object sender, RoutedEventArgs e) => _importCts?.Cancel();
+    // Аккаунты Hero, базы данных и загрузка раздач — в MainWindow.Import.cs.
 
     private async void ImportErrors_Click(object sender, RoutedEventArgs e) => await LoadImportErrorsAsync();
 
@@ -1064,7 +1158,27 @@ public partial class MainWindow : Window
         var host = Host;
         if (host == null) return;
         var defs = await Bg(() => host.StatsRepo.LoadActiveAsync());
-        StatDefsGrid.ItemsSource = defs.Select(d => new StatDefVm(d.Code, d.Title, d.Scope, d.Version, d)).ToList();
+        _statDefs = defs.Select(d => new StatDefVm(d.Code, d.Title, d.Scope, d.Version, d)).ToList();
+        ShowStatDefs();
+    }
+
+    private List<StatDefVm> _statDefs = new();
+
+    private void StatSearchBox_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (IsLoaded) ShowStatDefs();
+    }
+
+    /// <summary>Список статов с учётом строки поиска; выбранный стат остаётся выбранным, если он прошёл фильтр.</summary>
+    private void ShowStatDefs()
+    {
+        string q = StatSearchBox.Text.Trim();
+        string? keep = (StatDefsGrid.SelectedItem as StatDefVm)?.Code;
+        var shown = q.Length == 0 ? _statDefs
+            : _statDefs.Where(d => d.Code.Contains(q, StringComparison.OrdinalIgnoreCase) || d.Title.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+        StatDefsGrid.ItemsSource = shown;
+        if (keep != null && shown.FirstOrDefault(d => d.Code == keep) is { } again) StatDefsGrid.SelectedItem = again;
+        StatSearchCount.Text = q.Length == 0 ? $"{_statDefs.Count:N0}" : $"{shown.Count:N0} из {_statDefs.Count:N0}";
     }
 
     private void StatDefsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1176,6 +1290,8 @@ public partial class MainWindow : Window
         SetCashStats.Text = s.CashStats;
         SetMttStats.Text = s.MttStats;
         SetOpacity.Text = s.PanelOpacity.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        SetActiveHours.Text = s.HudActiveTableHours.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        SetBackupFolder.Text = s.BackupFolder ?? "";
         SetPopupTrigger.SelectedIndex = s.PopupTrigger == PopupTrigger.Click ? 1 : 0;
         UpdatePopupTriggerFields();
         SetHoverDelay.Text = s.HoverDelayMs.ToString();
@@ -1194,42 +1310,71 @@ public partial class MainWindow : Window
     private async void SettingsSave_Click(object sender, RoutedEventArgs e)
     {
         var inv = System.Globalization.CultureInfo.InvariantCulture;
-        var s = new TrackerSettings
-        {
-            ConnectionString = SetConn.Text.Trim(),
-            RoomCode = (string)((ComboBoxItem)SetRoom.SelectedItem).Content,
-            HandHistoryFolder = NullIfEmpty(SetHhFolder.Text),
-            LiveDataFolder = NullIfEmpty(SetDataFolder.Text),
-            TournamentSummaryFolder = _svc.Settings.TournamentSummaryFolder,
-            AutoImport = SetAutoImport.IsChecked == true,
-            HudEnabled = SetHud.IsChecked == true,
-            ClientProcessName = SetProcess.Text.Trim(),
-            TableWindowClass = SetWindowClass.Text.Trim(),
-            LiveSeatOffset = int.TryParse(SetSeatOffset.Text, out var off) ? off : 1,
-            CashStats = SetCashStats.Text.Trim(),
-            MttStats = SetMttStats.Text.Trim(),
-            PanelOpacity = double.TryParse(SetOpacity.Text.Replace(',', '.'), System.Globalization.NumberStyles.Float, inv, out var op) ? op : 0.85,
-            SessionGapMinutes = int.TryParse(SetSessionGap.Text, out var gap) ? gap : 30,
-            HudActiveTableHours = _svc.Settings.HudActiveTableHours,
-            PopupTrigger = SetPopupTrigger.SelectedIndex == 1 ? PopupTrigger.Click : PopupTrigger.Hover,
-            HoverDelayMs = int.TryParse(SetHoverDelay.Text, out var hd) ? Math.Clamp(hd, 0, 10_000) : 500,
-            HoverHideMs = int.TryParse(SetHoverHide.Text, out var hh) ? Math.Clamp(hh, 0, 10_000) : 400,
-            HudHotkey = string.IsNullOrWhiteSpace(SetHotkey.Text) ? "Ctrl+Alt+H" : SetHotkey.Text.Trim(),
-            SampleSubscriptBelow = int.TryParse(SetSampleBelow.Text, out var sb) ? Math.Clamp(sb, 0, 1000) : 10,
-            Cap100To99 = SetCap99.IsChecked == true,
-            McpAnonymizeOpponents = _svc.Settings.McpAnonymizeOpponents, McpAllowWrites = _svc.Settings.McpAllowWrites,
-            ReplayerHud = _svc.Settings.ReplayerHud, ReplayerProfile = _svc.Settings.ReplayerProfile,
-            ReplayerPanelOffsets = _svc.Settings.ReplayerPanelOffsets,
-            ReplayerBadgeX = _svc.Settings.ReplayerBadgeX, ReplayerBadgeY = _svc.Settings.ReplayerBadgeY,
-            CashProfile = _svc.Settings.CashProfile, MttProfile = _svc.Settings.MttProfile,
-            AutoBackupDays = int.TryParse(SetBackupDays.Text, out var bd) ? Math.Max(0, bd) : 1,
-            KeepBackups = int.TryParse(SetKeepBackups.Text, out var kb) ? Math.Max(1, kb) : 7,
-        };
+        // От копии текущих настроек: в форме есть не все поля (виджет сессии, папка бэкапов, реплеер),
+        // и собранный с нуля объект молча сбрасывал их в значения по умолчанию.
+        var s = TrackerSettings.FromJson(_svc.Settings.ToJson());
+        s.ConnectionString = SetConn.Text.Trim();
+        s.RoomCode = (string)((ComboBoxItem)SetRoom.SelectedItem).Content;
+        s.HandHistoryFolder = NullIfEmpty(SetHhFolder.Text);
+        s.LiveDataFolder = NullIfEmpty(SetDataFolder.Text);
+        s.AutoImport = SetAutoImport.IsChecked == true;
+        s.HudEnabled = SetHud.IsChecked == true;
+        s.ClientProcessName = SetProcess.Text.Trim();
+        s.TableWindowClass = SetWindowClass.Text.Trim();
+        s.LiveSeatOffset = int.TryParse(SetSeatOffset.Text, out var off) ? off : 1;
+        s.CashStats = SetCashStats.Text.Trim();
+        s.MttStats = SetMttStats.Text.Trim();
+        s.PanelOpacity = double.TryParse(SetOpacity.Text.Replace(',', '.'), System.Globalization.NumberStyles.Float, inv, out var op)
+            ? Math.Clamp(op, 0.2, 1) : 0.85;
+        s.HudActiveTableHours = double.TryParse(SetActiveHours.Text.Replace(',', '.'), System.Globalization.NumberStyles.Float, inv, out var ah) && ah > 0
+            ? ah : 3;
+        s.BackupFolder = NullIfEmpty(SetBackupFolder.Text);
+        s.SessionGapMinutes = int.TryParse(SetSessionGap.Text, out var gap) ? gap : 30;
+        s.PopupTrigger = SetPopupTrigger.SelectedIndex == 1 ? PopupTrigger.Click : PopupTrigger.Hover;
+        s.HoverDelayMs = int.TryParse(SetHoverDelay.Text, out var hd) ? Math.Clamp(hd, 0, 10_000) : 500;
+        s.HoverHideMs = int.TryParse(SetHoverHide.Text, out var hh) ? Math.Clamp(hh, 0, 10_000) : 400;
+        s.HudHotkey = string.IsNullOrWhiteSpace(SetHotkey.Text) ? "Ctrl+Alt+H" : SetHotkey.Text.Trim();
+        s.SampleSubscriptBelow = int.TryParse(SetSampleBelow.Text, out var sb) ? Math.Clamp(sb, 0, 1000) : 10;
+        s.Cap100To99 = SetCap99.IsChecked == true;
+        s.AutoBackupDays = int.TryParse(SetBackupDays.Text, out var bd) ? Math.Max(0, bd) : 1;
+        s.KeepBackups = int.TryParse(SetKeepBackups.Text, out var kb) ? Math.Max(1, kb) : 7;
+        // Опечатка в пути молча выключила бы авто-импорт или рассадку — лучше сказать об этом сразу.
+        var missing = new[] { ("истории раздач", s.HandHistoryFolder), ("«.data»", s.LiveDataFolder) }
+            .Where(f => f.Item2 != null && !System.IO.Directory.Exists(f.Item2)).Select(f => f.Item1).ToList();
         _svc.SaveSettings(s);
         SettingsStatus.Text = "Сохранено, перезапуск подсистем…";
         await _svc.StartAsync();
-        SettingsStatus.Text = "Готово. " + _svc.DbStatus;
+        SettingsStatus.Text = "Готово. " + _svc.DbStatus
+                              + (missing.Count > 0 ? $"\nВнимание: папка {string.Join(" и папка ", missing)} не найдена — проверьте путь." : "");
         RegisterHudHotkey();
+    }
+
+    private void SetHhBrowse_Click(object sender, RoutedEventArgs e) => BrowseFolderInto(SetHhFolder, "Папка истории раздач клиента рума");
+    private void SetDataBrowse_Click(object sender, RoutedEventArgs e) => BrowseFolderInto(SetDataFolder, "Папка .data клиента (рассадка)");
+    private void SetBackupBrowse_Click(object sender, RoutedEventArgs e) => BrowseFolderInto(SetBackupFolder, "Папка для резервных копий базы");
+
+    private void BrowseFolderInto(TextBox box, string title)
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = title };
+        var current = box.Text.Trim();
+        if (current.Length > 0 && System.IO.Directory.Exists(current)) dlg.InitialDirectory = current;
+        if (dlg.ShowDialog(this) == true) box.Text = dlg.FolderName;
+    }
+
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e) => OpenInExplorer(TrackerSettings.Folder);
+    private void OpenLogFolder_Click(object sender, RoutedEventArgs e) => OpenInExplorer(AppServices.LogFolder);
+
+    private void OpenInExplorer(string folder)
+    {
+        try
+        {
+            System.IO.Directory.CreateDirectory(folder);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            SettingsStatus.Text = "Не удалось открыть папку: " + ex.Message;
+        }
     }
 
     private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();

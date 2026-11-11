@@ -15,7 +15,7 @@ public sealed record OverviewRow(long Hands, long NetWon, long NetBbX100, long R
 
 public sealed record GraphPoint(DateTime PlayedAt, long NetWon, int NetBbX100, bool Showdown, long EvNetWon, int EvBbX100);
 
-public sealed record SessionRow(DateTime Start, DateTime End, long Hands, long NetWon, long NetBbX100, int Tables)
+public sealed record SessionRow(DateTime Start, DateTime End, long Hands, long NetWon, long NetBbX100, int Tables, int Tournaments = 0)
 {
     public TimeSpan Duration => End - Start;
     public double Bb100 => Hands == 0 ? 0 : NetBbX100 / 100.0 / Hands * 100;
@@ -38,6 +38,31 @@ public sealed record TournamentRow(long TournamentId, string? Name, DateTime? St
 
     /// <summary>Стоимость одного входа: по ней турниры одного формата и различаются.</summary>
     public long? EntryCost => BuyIn is null ? null : BuyIn + (Fee ?? 0);
+
+    // «$5.00+$0.50 USD», «€9+€1», «$4.50+$4.50+$1.00 USD» (нокаут: баунти + призовой фонд + сбор) — только в начале названия:
+    // сумма где-то в середине («Sunday $109 Special») стоимостью входа не является.
+    private static readonly System.Text.RegularExpressions.Regex BuyInInName = new(
+        @"^\s*[$€£]?(\d+(?:\.\d{1,2})?)\s*\+\s*[$€£]?(\d+(?:\.\d{1,2})?)(?:\s*\+\s*[$€£]?(\d+(?:\.\d{1,2})?))?(?:\s+([A-Z]{3})\b)?",
+        System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Бай-ин из названия турнира — когда в базе его нет. Стоимость входа приходит из итогов турнира; без них все
+    /// турниры сваливались в один формат «бай-ин ?». Но часть румов пишет её прямо в заголовке раздачи
+    /// («$5.00+$0.50 USD»), и заголовок сохраняется как название турнира: этого хватает, чтобы различать форматы
+    /// и показать бай-ин. Призы, место и ROI отсюда не появляются — они по-прежнему только из итогов.
+    /// </summary>
+    public TournamentRow WithBuyInFromName()
+    {
+        if (BuyIn != null || Name is null || BuyInInName.Match(Name) is not { Success: true } m) return this;
+        // Деньги — в сотых и без double: разбор через decimal с инвариантной культурой.
+        static long Cents(string s) => (long)Math.Round(decimal.Parse(s, CultureInfo.InvariantCulture) * 100m);
+        long first = Cents(m.Groups[1].Value), second = Cents(m.Groups[2].Value);
+        // Последнее слагаемое — сбор рума; всё, что перед ним, идёт в призовой фонд и баунти.
+        var (buyIn, fee) = m.Groups[3].Success ? (first + second, Cents(m.Groups[3].Value)) : (first, second);
+        // «CHP» у турнира без итогов — это валюта фишек из раздач, а не валюта входа.
+        string? currency = m.Groups[4].Success && Currency is null or "" or "CHP" ? m.Groups[4].Value : Currency;
+        return this with { BuyIn = buyIn, Fee = fee, Currency = currency };
+    }
 
     /// <summary>
     /// Формат турнира для группировки статистики: стоимость входа + тип (MTT/SNG) + размер стола + KO.
@@ -63,7 +88,8 @@ public sealed record TournamentRow(long TournamentId, string? Name, DateTime? St
             if (MaxSeats is > 0 && kind != "Spin & Go") parts.Add($"{MaxSeats}-max");
             if (KoKind == 2) parts.Add("Mystery KO");
             else if (IsKo) parts.Add("PKO");
-            if (Currency is { Length: > 0 } cur && cur != "USD") parts.Add(cur);
+            // «CHP» — фишки: так помечен турнир, у которого валюта входа неизвестна. В названии формата это шум.
+            if (Currency is { Length: > 0 } cur && cur != "USD" && cur != "CHP") parts.Add(cur);
             return string.Join(" ", parts);
         }
     }
@@ -98,6 +124,19 @@ public sealed record ReplayHand(long HandPk, long ExternalId, DateTime PlayedAt,
 
 public sealed record ActiveTable(long TableInstanceId, string ExternalGameId, string ExternalTableId, string TableName, GameKind Kind,
     long? TournamentId, int MaxSeats, DateTime LastHandAt, int? HeroSeat, List<(int Seat, string Name, long PlayerId)> Seats);
+
+/// <summary>
+/// Порядок позиций для таблиц: как ходят за столом префлоп — от UTG к баттону, затем блайнды. Значения enum
+/// идут иначе (BTN = 0) и менять их нельзя: они хранятся в базе.
+/// </summary>
+public static class PositionOrder
+{
+    public static int AtTable(Position p) => p switch
+    {
+        Position.UTG => 0, Position.UTG1 => 1, Position.MP => 2, Position.LJ => 3, Position.HJ => 4, Position.CO => 5,
+        Position.BTN => 6, Position.SB => 7, Position.BB => 8, _ => 9,
+    };
+}
 
 /// <summary>Отчёты дашборда: только пул reports (§15.10), вызывать из фонового потока (§10.3).</summary>
 public sealed class ReportRepository(TrackerDb db)
@@ -164,34 +203,64 @@ public sealed class ReportRepository(TrackerDb db)
         return list;
     }
 
-    public async Task<List<SessionRow>> SessionsAsync(int gapMinutes, CancellationToken ct = default)
+    /// <summary>
+    /// Сессии — серии раздач без длинного перерыва. Для турниров рядом со столами считается число турниров:
+    /// игрока пересаживают, и «столов» за вечер набирается больше, чем сыграно турниров.
+    /// </summary>
+    public async Task<List<SessionRow>> SessionsAsync(int gapMinutes, GameKind kind = GameKind.Cash, CancellationToken ct = default)
     {
         await using var conn = await db.Reports.OpenConnectionAsync(ct);
         await using var cmd = new NpgsqlCommand($"""
             WITH {HeroesCte},
             hh AS (
-                SELECT h.played_at, h.table_instance_id, hp.net_won, hp.net_won_bb_x100
+                SELECT h.played_at, h.table_instance_id, ti.tournament_id, hp.net_won, hp.net_won_bb_x100
                   FROM hand_players hp JOIN hands h ON h.hand_pk = hp.hand_pk
-                 WHERE hp.player_id IN (SELECT id FROM heroes) AND h.game_kind = 0 AND (hp.fact_bits & 1) <> 0
+                  LEFT JOIN table_instance ti ON ti.table_instance_id = h.table_instance_id
+                 WHERE hp.player_id IN (SELECT id FROM heroes) AND h.game_kind = ANY($2) AND (hp.fact_bits & 1) <> 0
             ), g AS (
                 SELECT *, CASE WHEN played_at - lag(played_at) OVER (ORDER BY played_at) > make_interval(mins => $1)
                                THEN 1 ELSE 0 END AS brk FROM hh
             ), s AS (
                 SELECT *, sum(brk) OVER (ORDER BY played_at ROWS UNBOUNDED PRECEDING) AS sid FROM g
             )
-            SELECT min(played_at), max(played_at), count(*), sum(net_won), sum(net_won_bb_x100), count(DISTINCT table_instance_id)::int
+            SELECT min(played_at), max(played_at), count(*), sum(net_won), sum(net_won_bb_x100), count(DISTINCT table_instance_id)::int,
+                   count(DISTINCT tournament_id)::int
               FROM s GROUP BY sid ORDER BY min(played_at) DESC
             """, conn);
         cmd.Parameters.AddWithValue(gapMinutes);
+        cmd.Parameters.AddWithValue(Kinds(kind));
         var list = new List<SessionRow>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))
-            list.Add(new SessionRow(r.GetDateTime(0), r.GetDateTime(1), r.GetInt64(2), r.GetInt64(3), r.GetInt64(4), r.GetInt32(5)));
+            list.Add(new SessionRow(r.GetDateTime(0), r.GetDateTime(1), r.GetInt64(2), r.GetInt64(3), r.GetInt64(4), r.GetInt32(5), r.GetInt32(6)));
         return list;
     }
 
-    public async Task<List<GroupRow>> ByPositionAsync(GameKind kind, CancellationToken ct = default) =>
-        await GroupAsync(kind, "hp.position", k => ((Position)short.Parse(k)).ToString(), ct);
+    /// <summary>
+    /// Сколько у Hero раздач в кеше и в турнирах. По этому числу вкладки выбирают вид игры при первом показе:
+    /// турнирный игрок не должен на каждой вкладке сам переключать «Кеш» на «Турниры».
+    /// </summary>
+    public async Task<(long Cash, long Tourney)> HeroHandCountsAsync(CancellationToken ct = default)
+    {
+        await using var conn = await db.Reports.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand($"""
+            WITH {HeroesCte}
+            SELECT count(*) FILTER (WHERE h.game_kind = 0), count(*) FILTER (WHERE h.game_kind <> 0)
+              FROM hand_players hp JOIN hands h ON h.hand_pk = hp.hand_pk
+             WHERE hp.player_id IN (SELECT id FROM heroes) AND (hp.fact_bits & 1) <> 0
+            """, conn);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        return await r.ReadAsync(ct) ? (r.GetInt64(0), r.GetInt64(1)) : (0, 0);
+    }
+
+    public async Task<List<GroupRow>> ByPositionAsync(GameKind kind, CancellationToken ct = default)
+    {
+        // В базе позиции идут в порядке значений enum (BTN, SB, BB, UTG…); в таблице — в порядке хода за столом.
+        var rows = await GroupAsync(kind, "hp.position", k => k, ct);
+        return rows.OrderBy(r => PositionOrder.AtTable((Position)short.Parse(r.Key)))
+            .Select(r => r with { Key = (Position)short.Parse(r.Key) == Position.None ? "без позиции" : ((Position)short.Parse(r.Key)).ToString() })
+            .ToList();
+    }
 
     public async Task<List<GroupRow>> ByLimitAsync(CancellationToken ct = default) =>
         await GroupAsync(GameKind.Cash, "h.bb", k => $"NL{long.Parse(k)}", ct);
@@ -253,7 +322,7 @@ public sealed class ReportRepository(TrackerDb db)
                 r.IsDBNull(6) ? null : r.GetString(6).Trim(), r.GetInt32(7), r.IsDBNull(8) ? null : r.GetInt32(8),
                 r.GetInt64(9), r.GetInt64(10), r.GetInt64(11), r.IsDBNull(12) ? null : r.GetInt32(12),
                 r.IsDBNull(13) ? null : (GameKind)r.GetInt16(13), r.IsDBNull(14) ? null : r.GetInt16(14),
-                r.GetBoolean(15), r.GetInt16(16)));
+                r.GetBoolean(15), r.GetInt16(16)).WithBuyInFromName());
         }
         return list;
     }

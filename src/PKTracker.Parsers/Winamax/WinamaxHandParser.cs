@@ -64,7 +64,8 @@ public sealed partial class WinamaxHandParser : IHandHistoryParser
     [GeneratedRegex(@"^raises [$€£]?[\d.,]+[€$£]? to ([$€£]?[\d.,]+[€$£]?)( and is all-in)?$")]
     private static partial Regex RaiseRx();
 
-    [GeneratedRegex(@"^shows \[([^\]]*)\] \(.*\)$")]
+    // Описание комбинации в скобках есть не всегда: в раздачах, записанных наблюдателем, строка обрывается на картах.
+    [GeneratedRegex(@"^shows \[([^\]]*)\](?: \(.*\))?$")]
     private static partial Regex ShowsRx();
 
     [GeneratedRegex(@"^collected ([$€£]?[\d.,]+[€$£]?) from (pot|main pot|side pot(?: (\d+))?)$")]
@@ -74,7 +75,8 @@ public sealed partial class WinamaxHandParser : IHandHistoryParser
     private static partial Regex DealtRx();
 
     // Seat 2: name (small blind) (button) won 2895 | showed [Ad Th] and won 2950 with … | showed [..] and lost with …
-    [GeneratedRegex(@"^((?:\((?:button|small blind|big blind)\) ?)*)(?:won ([$€£]?[\d.,]+[€$£]?)|showed \[([^\]]*)\] and (?:won ([$€£]?[\d.,]+[€$£]?) with .+|lost with .+)|folded (?:before (?:the )?Flop|on the (?:Flop|Turn|River))(?: \(didn't bet\))?)$")]
+    // «with …» необязательно: в раздачах, записанных наблюдателем, название комбинации опущено.
+    [GeneratedRegex(@"^((?:\((?:button|small blind|big blind)\) ?)*)(?:won ([$€£]?[\d.,]+[€$£]?)|showed \[([^\]]*)\] and (?:won ([$€£]?[\d.,]+[€$£]?)(?: with .+)?|lost(?: with .+)?)|folded (?:before (?:the )?Flop|on the (?:Flop|Turn|River))(?: \(didn't bet\))?)$")]
     private static partial Regex SummarySeatRx();
 
     private enum Section { AnteBlinds, Preflop, Flop, Turn, River, Showdown, Summary }

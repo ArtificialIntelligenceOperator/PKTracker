@@ -22,7 +22,12 @@ public static class CompleteHands
     /// Признаки свои у каждого формата (<see cref="HandBoundary"/>): с метками одного WPN файлы 888 и iPoker
     /// всегда давали 0 и молча не импортировались, а у PokerStars «следующая раздача» не находилась вовсе.
     /// </remarks>
-    public static int CompleteLength(ReadOnlySpan<byte> buf, bool fileQuiet, HandBoundary boundary)
+    /// <param name="settled">
+    /// Файл заведомо дописан (лежит в архиве или давно не менялся). Тогда последняя строка без перевода
+    /// строки — тоже часть раздачи: у Winamax и выгрузок других трекеров файл на ней и заканчивается, и
+    /// обрезка по последнему переводу строки теряла строку итогов, а с ней и всю раздачу.
+    /// </param>
+    public static int CompleteLength(ReadOnlySpan<byte> buf, bool fileQuiet, HandBoundary boundary, bool settled = false)
     {
         var end = Encoding.UTF8.GetBytes(boundary.EndMarker);
         if (boundary.ClosedByMarker)
@@ -40,7 +45,8 @@ public static class CompleteHands
             var tail = buf[tailStart..];
             if (tail.IndexOf(end) >= 0)
             {
-                // Хвост целиком дописан только до последнего перевода строки
+                if (settled) return buf.Length;
+                // Файл, который клиент ещё может дописывать: хвост надёжен только до последнего перевода строки
                 int nl = buf.LastIndexOf((byte)'\n');
                 return nl >= 0 ? nl + 1 : 0;
             }

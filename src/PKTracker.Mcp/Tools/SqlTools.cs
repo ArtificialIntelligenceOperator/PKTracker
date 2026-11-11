@@ -15,7 +15,7 @@ public sealed class SqlTools(TrackerContext ctx)
     {
         return await TrackerContext.Guard(async () =>
         {
-            var host = await ctx.HostAsync(ct);
+            var host = await ctx.HostAsync(ct);   // схема — не данные об игроках: доступна и во время игры
             var sb = new System.Text.StringBuilder(Resources.ReadDoc("DATABASE.md"));
             sb.AppendLine().AppendLine("## Фактические колонки").AppendLine();
             await using var conn = await host.Db.Reports.OpenConnectionAsync(ct);
@@ -42,7 +42,7 @@ public sealed class SqlTools(TrackerContext ctx)
 
     private async Task<string> RunSqlCore(string query, int max_rows, CancellationToken ct)
     {
-        var host = await ctx.HostAsync(ct);
+        var host = await ctx.AnalysisHostAsync(ct);
         var trimmed = query.Trim().TrimEnd(';');
         var head = trimmed.TrimStart('(').TrimStart();
         if (!(head.StartsWith("select", StringComparison.OrdinalIgnoreCase) || head.StartsWith("with", StringComparison.OrdinalIgnoreCase)

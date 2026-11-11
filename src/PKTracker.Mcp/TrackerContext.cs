@@ -36,7 +36,9 @@ public sealed class TrackerContext : IAsyncDisposable
         в ресурсе pktracker://docs/stats. Перед save_stat всегда вызывай test_stat. Для произвольной аналитики — run_sql
         (только чтение); схема — get_database_schema. При включённой анонимизации оппоненты видны как Villain_XXXXXX —
         эти псевдонимы можно передавать в инструменты вместо ников. Анализируй только сыгранные раздачи: советы по
-        текущей раздаче в реальном времени (RTA) запрещены правилами румов.
+        текущей раздаче в реальном времени (RTA) запрещены правилами румов. Пока запущен клиент рума, инструменты
+        анализа не отвечают — это не сбой: разбор оппонентов во время сессии и есть RTA; не ищи обходных путей,
+        предложи вернуться к разбору после игры.
         """;
 
     private readonly McpOptions _options;
@@ -80,6 +82,27 @@ public sealed class TrackerContext : IAsyncDisposable
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// База для инструментов анализа (статы, раздачи, лики, SQL). Пока запущен клиент рума, они не отвечают:
+    /// ИИ-ассистент, разбирающий оппонентов во время сессии, — это помощь в реальном времени. WPN запрещает её
+    /// п. 4.2.1 / 4.2.3 / 10.4 (а учебные материалы — п. 4.1.1 — допустимы только вне игры), 888 прямо запрещает
+    /// помощников «с искусственным интеллектом», PokerStars и iPoker — любые советы при открытом клиенте.
+    /// Настройка статов и раскладки HUD (CustomizationTools) советом не является и остаётся доступной.
+    /// </summary>
+    public async Task<TrackerHost> AnalysisHostAsync(CancellationToken ct = default)
+    {
+        // Настройки перечитываются: имя процесса клиента могли поменять в приложении, пока сервер работает.
+        string? configured = null;
+        try { configured = TrackerSettings.Load().ClientProcessName; }
+        catch (Exception ex) when (ex is IOException or JsonException) { }
+        if (RoomClientProbe.AnyRoomClient(configured) is { } client)
+            throw new ModelContextProtocol.McpException(
+                $"Запущен клиент покер-рума ({client}). Анализ раздач и оппонентов через MCP во время игры — это помощь в реальном времени, " +
+                "запрещённая правилами румов (WPN 4.2.1/4.2.3/10.4, 888, PokerStars, iPoker, GG). Закройте клиент рума и повторите запрос после сессии. " +
+                "Инструменты настройки статов и раскладки HUD доступны и сейчас.");
+        return await HostAsync(ct);
     }
 
     public static string ToJson(object value) => JsonSerializer.Serialize(value, Json);

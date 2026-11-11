@@ -210,19 +210,7 @@ public sealed class ReplayerWindow : Window
             // Анте в ход раздачи не идут: восемь одинаковых строк ничего не сообщают — размер анте есть в шапке.
             if (a.Action == ActionType.PostAnte) continue;
             var name = h.Seats.FirstOrDefault(x => x.Seat == a.Seat)?.Name ?? $"Seat {a.Seat}";
-            string text = a.Action switch
-            {
-                ActionType.Raise => $"raises to {Amt(a.ToAmount)}",
-                ActionType.Fold or ActionType.Check => a.Action.ToString().ToLowerInvariant(),
-                ActionType.Call => $"calls {Amt(a.Amount)}",
-                ActionType.Bet => $"bets {Amt(a.Amount)}",
-                ActionType.UncalledReturn => $"uncalled {Amt(a.Amount)} returned",
-                ActionType.Collect => $"collects {Amt(a.Amount)}",
-                ActionType.PostSb => $"posts SB {Amt(a.Amount)}",
-                ActionType.PostBb or ActionType.PostBbOot => $"posts BB {Amt(a.Amount)}",
-                _ => $"{a.Action} {Amt(a.Amount)}",
-            } + (a.AllIn ? " (all-in)" : "");
-            sb.AppendLine($"{name}: {text}");
+            sb.AppendLine($"{name}: {Describe(a.Action, a.Amount, a.ToAmount, a.AllIn)}");
         }
         if (board.Count > 0) sb.AppendLine($"Борд: [{string.Join(" ", board)}]");
         sb.AppendLine($"Банк: {Amt(h.TotalPot)}");
@@ -230,6 +218,26 @@ public sealed class ReplayerWindow : Window
             sb.AppendLine($"  {seat.Name}: {(seat.NetWon > 0 ? "+" : "−")}{Amt(Math.Abs(seat.NetWon))}");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Действие словами — одно и то же в журнале справа, в подписи у места и в скопированном тексте.
+    /// Раньше журнал печатал имена из кода («PostAnte», «Call»), а копия — «posts», «calls».
+    /// </summary>
+    private string Describe(ActionType action, long amount, long toAmount, bool allIn) => action switch
+    {
+        ActionType.Fold => "folds",
+        ActionType.Check => "checks",
+        ActionType.Call => $"calls {Amt(amount)}",
+        ActionType.Bet => $"bets {Amt(amount)}",
+        ActionType.Raise => $"raises to {Amt(toAmount)}",
+        ActionType.UncalledReturn => $"uncalled {Amt(amount)} returned",
+        ActionType.Collect => $"collects {Amt(amount)}",
+        ActionType.PostSb => $"posts SB {Amt(amount)}",
+        ActionType.PostBb or ActionType.PostBbOot => $"posts BB {Amt(amount)}",
+        ActionType.PostAnte => $"posts ante {Amt(amount)}",
+        ActionType.PostDead => $"posts dead blind {Amt(amount)}",
+        _ => $"{action} {Amt(amount)}",
+    } + (allIn ? " (all-in)" : "");
 
     private void CopyTranscript()
     {
@@ -305,10 +313,16 @@ public sealed class ReplayerWindow : Window
         if (h == null) return null;
         var name = _settings.ReplayerProfile;
         if (name == ProfileBadge.Hidden) return null;
-        if (name == HudProfile.LegacyName)
-            return HudProfile.FromCodes(h.Kind == GameKind.Cash ? _settings.CashStats : _settings.MttStats,
-                h.Kind == GameKind.Cash ? "cash" : "mtt");
-        return _profiles.Resolve(name, h.Kind);
+        var profile = name == HudProfile.LegacyName
+            ? HudProfile.FromCodes(h.Kind == GameKind.Cash ? _settings.CashStats : _settings.MttStats,
+                h.Kind == GameKind.Cash ? "cash" : "mtt")
+            : _profiles.Resolve(name, h.Kind);
+        // Реплеер — разбор после игры, и ограничения HUD на него обычно не действуют. Исключение — PokerStars:
+        // пока его клиент открыт, HUD в реплеере считается копией HUD над столом и обязан быть так же урезан.
+        var policy = PKTracker.Data.RoomHudPolicy.For(_host.Db.RoomCode);
+        return policy.RestrictedNow(overlay: false)
+            ? HudCompliance.Restrict(profile, _host.Hud.Stats, policy.MaxColorRanges, out _)
+            : profile;
     }
 
     /// <summary>Панель игрока рядом с его местом: над боксом, чтобы не перекрывать карты и стек.</summary>
@@ -498,14 +512,7 @@ public sealed class ReplayerWindow : Window
                     break;
             }
             pot = invested.Values.Sum();
-            string text = a.Action switch
-            {
-                ActionType.Raise => $"raises to {Amt(a.ToAmount)}",
-                ActionType.Fold or ActionType.Check => a.Action.ToString().ToLowerInvariant(),
-                ActionType.UncalledReturn => $"uncalled {Amt(a.Amount)} returned",
-                ActionType.Collect => $"collects {Amt(a.Amount)}",
-                _ => $"{a.Action} {Amt(a.Amount)}",
-            } + (a.AllIn ? " (all-in)" : "");
+            string text = Describe(a.Action, a.Amount, a.ToAmount, a.AllIn);
             lastAction[a.Seat] = text;
             _log.Items.Add($"{name}: {text}");
         }
