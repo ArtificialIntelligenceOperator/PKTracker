@@ -41,7 +41,20 @@ public sealed class AppServices : IAsyncDisposable
 
     /// <summary>Имя процесса запущенного клиента GG; null — клиент GG не запущен.</summary>
     public string? GgClient { get; private set; }
+    /// <summary>Режим «рядом с GG — без работы со столами» сейчас действует: HUD, .data-канал и виджет сессии выключены.</summary>
+    public bool GgPassive { get; private set; }
+    /// <summary>Приложение закрывается по режиму <see cref="GgCoexistence.Exit"/>: дальше ничего запускать не нужно.</summary>
+    public bool Exiting { get; private set; }
+    /// <summary>Режим «закрывать при клиенте GG» сработал: приложению пора выйти.</summary>
+    public event Action? GgExitRequested;
+    /// <summary>
+    /// Вопрос при запуске трекера, когда клиент GG уже открыт, а режим — «закрывать»: true — закрыться. Без вопроса
+    /// трекер молча исчезал бы сразу после запуска, и поменять настройку при открытом клиенте GG было бы нельзя.
+    /// </summary>
+    public Func<string, bool>? ConfirmGgExitAtStartup { get; set; }
     private DispatcherTimer? _coexistenceTimer;
+    private (string? Client, GgCoexistence Mode)? _ggApplied;
+    private bool _ggExitDeclined;
 
     public event Action? StatusChanged;
     public event Action<ImportBatchResult>? HandsImported;
@@ -106,6 +119,9 @@ public sealed class AppServices : IAsyncDisposable
             return;
         }
 
+        // Режим совместной игры с GG — до запуска подсистем: при уже открытом клиенте GG панели HUD иначе успели бы
+        // встать над столами раньше первой проверки по таймеру.
+        if (await ApplyGgModeAsync()) return;
         StartWatcher();
         StartFeed();
         StartCoexistenceGuard();
@@ -121,7 +137,8 @@ public sealed class AppServices : IAsyncDisposable
     /// <summary>Показать или убрать виджет сессии по настройке. Только из UI-потока.</summary>
     public void ApplySessionWidget()
     {
-        if (Settings.SessionWidget && Host != null)
+        // Виджет — такое же окно поверх столов, как панели HUD: в режиме «без работы со столами» его нет.
+        if (Settings.SessionWidget && Host != null && !GgPassive)
         {
             if (Session != null) { _ = Session.RefreshAsync(); return; }
             Session = new SessionWidget(this);
@@ -143,29 +160,79 @@ public sealed class AppServices : IAsyncDisposable
     }
 
     /// <summary>
-    /// Игроки часто держат открытыми несколько румов сразу, и GG — один из них, поэтому рядом с клиентом GG трекер
-    /// продолжает работать для остальных румов: HUD, авто-импорт и .data-канал не останавливаются. С самой сетью GG
-    /// он при этом не взаимодействует никак: оверлея над её столами нет, её окна не читаются, а импорт её раздач,
-    /// пока клиент запущен, закрыт (<see cref="FileImporter"/>). От проверки процессов клиентом GG трекер не прячется —
-    /// и не должен: по правилу GG от 15.10.2026 любой сторонний покерный софт рядом с клиентом остаётся на риске игрока,
-    /// о чём и напоминает строка в журнале при каждом запуске клиента GG.
+    /// Игроки часто держат открытыми несколько румов сразу, и GG — один из них. GG с 01.12.2026 запрещает сторонний
+    /// покерный софт рядом со своим клиентом и проверяет процессы, поэтому что делать при открытом клиенте GG, выбирает
+    /// игрок (<see cref="TrackerSettings.WhenGgRunning"/>): работать как обычно, выключить всё, что работает со столами,
+    /// или закрыть трекер. В любом режиме трекер с самой сетью GG не взаимодействует (нет оверлея над её столами, её окна
+    /// не читаются, импорт её раздач при открытом клиенте закрыт) и от проверки процессов не прячется.
     /// </summary>
     private void StartCoexistenceGuard()
     {
         if (_coexistenceTimer != null) return;
-        _coexistenceTimer = new DispatcherTimer(TimeSpan.FromSeconds(5), DispatcherPriority.Background, async (_, _) =>
-        {
-            // Перебор процессов — в фоне: он стоит десятки миллисекунд, а таймер тикает в UI-потоке.
-            var now = await Task.Run(RoomClientProbe.ForbiddenCoexistence);
-            if (now == GgClient) return;
-            GgClient = now;
-            if (now != null)
-                Log("App", $"Запущен клиент GG ({now}). PKTracker продолжает работать для остальных румов; с сетью GG он не взаимодействует " +
-                           "(нет HUD над её столами, импорт её раздач закрыт, пока клиент открыт). Учтите: с 01.12.2026 GG запрещает " +
-                           "любой сторонний покерный софт рядом со своим клиентом и проверяет запущенные программы — это ваш риск.");
-            else Log("App", "Клиент GG закрыт.");
-        }, _ui);
+        // Смена режима в настройках подхватывается тем же тиком, что и запуск или закрытие клиента GG.
+        _coexistenceTimer = new DispatcherTimer(TimeSpan.FromSeconds(5), DispatcherPriority.Background,
+            async (_, _) => await ApplyGgModeAsync(), _ui);
         _coexistenceTimer.Start();
+    }
+
+    /// <summary>Привести трекер к выбранному режиму совместной игры с GG. true — приложение закрывается.</summary>
+    private async Task<bool> ApplyGgModeAsync()
+    {
+        if (Exiting) return true;
+        // Перебор процессов — в фоне: он стоит десятки миллисекунд, а вызывают отсюда из UI-потока.
+        var client = await Task.Run(RoomClientProbe.ForbiddenCoexistence);
+        var mode = Settings.WhenGgRunning;
+        if (_ggApplied == (client, mode)) return false;
+        bool first = _ggApplied == null, wasRunning = _ggApplied?.Client != null;
+        _ggApplied = (client, mode);
+        GgClient = client;
+        if (client == null) _ggExitDeclined = false;
+
+        if (client != null && mode == GgCoexistence.Exit && !_ggExitDeclined)
+        {
+            // Трекер запустили руками при уже открытом клиенте GG — спрашиваем; клиент GG появился позже — выходим сразу.
+            if (first && ConfirmGgExitAtStartup?.Invoke(client) == false) _ggExitDeclined = true;
+            else
+            {
+                Exiting = true;
+                Log("App", $"Запущен клиент GG ({client}): по настройке «Пока открыт клиент GG — закрывать PKTracker» трекер закрывается.");
+                GgExitRequested?.Invoke();
+                return true;
+            }
+        }
+
+        bool passive = client != null && mode != GgCoexistence.Continue;
+        SetGgPassive(passive);
+        if (client != null && passive)
+            Log("App", $"Запущен клиент GG ({client}): режим совместной игры — панели HUD и попапы закрыты, слежение за окнами столов, " +
+                       ".data-канал и виджет сессии выключены до закрытия клиента GG. Файлы истории других румов продолжают импортироваться.");
+        else if (client != null)
+            Log("App", $"Запущен клиент GG ({client}). PKTracker продолжает работать для остальных румов; с сетью GG он не взаимодействует " +
+                       "(нет HUD над её столами, импорт её раздач закрыт, пока клиент открыт). Учтите: с 01.12.2026 GG запрещает " +
+                       "любой сторонний покерный софт рядом со своим клиентом и проверяет запущенные программы — это ваш риск. " +
+                       "Режим меняется в «Настройки → Пока открыт клиент GG».");
+        else if (wasRunning) Log("App", "Клиент GG закрыт — трекер работает в обычном режиме.");
+        return false;
+    }
+
+    private void SetGgPassive(bool on)
+    {
+        if (GgPassive == on) return;
+        GgPassive = on;
+        if (on)
+        {
+            _feed?.Dispose();
+            _feed = null;
+            Session?.Close();
+            Session = null;
+        }
+        Hud.Suspended = on;
+        if (!on && Host != null)
+        {
+            StartFeed();
+            ApplySessionWidget();
+        }
+        RaiseStatus();
     }
 
     private void StartWatcher()
@@ -206,6 +273,10 @@ public sealed class AppServices : IAsyncDisposable
 
     private void StartFeed()
     {
+        _feed?.Dispose();
+        _feed = null;
+        // .data — живой канал клиента: в режиме «рядом с GG — без работы со столами» он не читается.
+        if (GgPassive) return;
         var folder = Settings.LiveDataFolder;
         if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return;
         _feed = new PokerKingDataFeed(folder, Settings.LiveSeatOffset);

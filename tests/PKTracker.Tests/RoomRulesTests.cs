@@ -96,6 +96,18 @@ public class RoomRulesTests
         }
     }
 
+    [Fact]
+    public void GgModeDefaultsToContinueAndSurvivesSettingsRoundTrip()
+    {
+        // По умолчанию трекер рядом с клиентом GG работает как обычно; строгие режимы включает сам игрок.
+        Assert.Equal(GgCoexistence.Continue, new TrackerSettings().WhenGgRunning);
+        Assert.Equal(GgCoexistence.Continue, TrackerSettings.FromJson("{}").WhenGgRunning);
+        var s = new TrackerSettings { WhenGgRunning = GgCoexistence.Passive };
+        Assert.Contains("\"WhenGgRunning\": \"Passive\"", s.ToJson());   // словом: settings.json правят руками
+        Assert.Equal(GgCoexistence.Passive, TrackerSettings.FromJson(s.ToJson()).WhenGgRunning);
+        Assert.Equal(GgCoexistence.Exit, TrackerSettings.FromJson("{\"WhenGgRunning\":\"Exit\"}").WhenGgRunning);
+    }
+
     private static Dictionary<string, CompiledStat> Stats(params StatDefinition[] defs) =>
         StatCompiler.CompileAll(defs).ToDictionary(s => s.Code);
 

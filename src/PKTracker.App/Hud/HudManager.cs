@@ -77,12 +77,39 @@ public sealed class HudManager : IDisposable
 
     /// <summary>
     /// Разрешён ли оверлей правилами активного рума (GG — нет). Открытый рядом клиент GG оверлею над столами
-    /// других румов не мешает: окна ищутся только у процесса активного рума, к окнам GG трекер не прикасается.
+    /// других румов сам по себе не мешает: окна ищутся только у процесса активного рума, к окнам GG трекер
+    /// не прикасается. Снимается он рядом с GG только по выбору игрока — <see cref="Suspended"/>.
     /// </summary>
-    private bool Allowed => _svc.Host is not { } h || RoomHudPolicy.For(h.Db.RoomCode).HudAllowed;
+    private bool Allowed => !_suspended && (_svc.Host is not { } h || RoomHudPolicy.For(h.Db.RoomCode).HudAllowed);
+
+    private bool _suspended;
+
+    /// <summary>
+    /// Режим «рядом с GG — без работы со столами» (<see cref="GgCoexistence.Passive"/>): панели и попапы закрыты,
+    /// слежение за окнами клиента остановлено вместе с хуками. Не просто «скрыть»: GG запрещает программы,
+    /// взаимодействующие со столами, поэтому в этом режиме трекер к окнам клиентов не обращается вовсе.
+    /// </summary>
+    public bool Suspended
+    {
+        get => _suspended;
+        set
+        {
+            if (_suspended == value) return;
+            _suspended = value;
+            if (value)
+            {
+                CloseAllPanels();
+                _tracker.Stop();
+                App.SetLowLatency(false);
+                StatusChanged?.Invoke();
+            }
+            else Start();
+        }
+    }
 
     public void Start()
     {
+        if (_suspended) return;
         if (_svc.Host is { } h && !RoomHudPolicy.For(h.Db.RoomCode).HudAllowed)
         {
             // Рум могли сменить при работающем приложении: панели прежнего рума убираем.

@@ -102,6 +102,24 @@ public partial class MainWindow
         catch (System.IO.IOException ex) { _svc.Log("App", "Настройки не сохранены: " + ex.Message); }
     }
 
+    /// <summary>Что именно означает выбранный режим совместной игры с GG — словами, под самим списком.</summary>
+    private void SetGgMode_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (SetGgModeHint == null) return;   // список создаётся раньше подписи под ним
+        SetGgModeHint.Text = SetGgMode.SelectedIndex switch
+        {
+            1 => "Соблюдение правила GG по существу: пока её клиент открыт, закрыты панели HUD и попапы, остановлено слежение за окнами столов " +
+                 "и .data-канал, убран виджет сессии — трекер не обращается ни к столам, ни к игровым данным. Остаётся только чтение файлов " +
+                 "истории других румов с диска, чтобы статистика не отставала. Клиент GG закрыли — всё включается само. Процесс трекера при " +
+                 "этом остаётся запущенным.",
+            2 => "Соблюдение правила GG буквально: как только её клиент запущен, PKTracker и его MCP-сервер закрываются — рядом с клиентом GG " +
+                 "не остаётся ни одного процесса трекера. Раздачи других румов, сыгранные за это время, подхватятся при следующем запуске.",
+            _ => "HUD, авто-импорт и .data-канал для других румов работают и рядом с клиентом GG; с самой сетью GG трекер не взаимодействует. " +
+                 "С 01.12.2026 GG запрещает любой сторонний покерный софт рядом со своим клиентом и проверяет запущенные программы — " +
+                 "в этом режиме риск на вас.",
+        };
+    }
+
     private void SetRoom_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (SetRoom.SelectedItem is System.Windows.Controls.ComboBoxItem { Content: string code })

@@ -165,6 +165,21 @@ public sealed class TableWindowTracker : IDisposable
         if (moved.Count > 0) WindowsMoved?.Invoke(moved);
     }
 
+    /// <summary>
+    /// Перестать следить за окнами клиента: таймеры остановлены, хуки сняты, список окон очищен. В отличие от
+    /// <see cref="Dispose"/> после этого можно снова вызвать <see cref="Start"/> — хуки будут поставлены заново.
+    /// </summary>
+    public void Stop()
+    {
+        Dispose();
+        // Без сброса Start не переставил бы хуки на процесс клиента: он делает это, только когда меняется набор pid.
+        _pids = new HashSet<uint>();
+        _dirty.Clear();
+        if (_windows.Count == 0) return;
+        _windows.Clear();
+        WindowsChanged?.Invoke(Array.Empty<TableWindow>());
+    }
+
     public void Dispose()
     {
         _scanTimer.Stop();

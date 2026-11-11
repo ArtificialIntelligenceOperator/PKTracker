@@ -68,7 +68,17 @@ public partial class App : Application
         CreateTray();
         _main.Show();
 
+        // Режим «закрывать PKTracker, пока открыт клиент GG» (Настройки → Пока открыт клиент GG).
+        Services.GgExitRequested += ExitApp;
+        Services.ConfirmGgExitAtStartup = client => MessageBox.Show(
+            $"Запущен клиент сети GG ({client}), а в настройках выбрано «Пока открыт клиент GG — закрывать PKTracker».\n\n" +
+            "Закрыть трекер?\n\n" +
+            "«Нет» — трекер останется открытым без HUD и без работы со столами (например, чтобы поменять эту настройку); " +
+            "обычная работа вернётся, когда клиент GG будет закрыт.",
+            "PKTracker — совместная игра с GG", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes) == MessageBoxResult.Yes;
+
         await Services.StartAsync();
+        if (Services.Exiting) return;
 
         // «--tab <название>» — открыть приложение сразу на нужной вкладке (ярлык на «Аналитика», проверка интерфейса).
         int ti = Array.IndexOf(e.Args, "--tab");

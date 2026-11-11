@@ -674,6 +674,16 @@
                                 </DockPanel>
                                 <TextBlock x:Name="SetRoomRules" Margin="210,0,0,4" TextWrapping="Wrap" Style="{StaticResource Dim}" />
                                 <DockPanel Style="{StaticResource SetRow}">
+                                    <TextBlock Style="{StaticResource SetLabel}" Text="Пока открыт клиент GG" />
+                                    <ComboBox x:Name="SetGgMode" Width="420" HorizontalAlignment="Left" SelectionChanged="SetGgMode_Changed"
+                                              ToolTip="Режим совместной игры: что делает трекер, когда вместе с другим румом открыт клиент GG (GGPoker, PokerOK)">
+                                        <ComboBoxItem Content="Работать как обычно (HUD для других румов остаётся)" />
+                                        <ComboBoxItem Content="Выключать HUD и всё, что работает со столами" />
+                                        <ComboBoxItem Content="Закрывать PKTracker" />
+                                    </ComboBox>
+                                </DockPanel>
+                                <TextBlock x:Name="SetGgModeHint" Margin="210,0,0,4" TextWrapping="Wrap" Style="{StaticResource Dim}" />
+                                <DockPanel Style="{StaticResource SetRow}">
                                     <TextBlock Style="{StaticResource SetLabel}" Text="Строка подключения" />
                                     <TextBox x:Name="SetConn" ToolTip="Подключение к PostgreSQL. Базу удобнее выбирать на вкладке «Импорт»" />
                                 </DockPanel>

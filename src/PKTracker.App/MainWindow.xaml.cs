@@ -1293,6 +1293,7 @@ public partial class MainWindow : Window
         SetActiveHours.Text = s.HudActiveTableHours.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
         SetBackupFolder.Text = s.BackupFolder ?? "";
         SetPopupTrigger.SelectedIndex = s.PopupTrigger == PopupTrigger.Click ? 1 : 0;
+        SetGgMode.SelectedIndex = (int)s.WhenGgRunning;
         UpdatePopupTriggerFields();
         SetHoverDelay.Text = s.HoverDelayMs.ToString();
         SetSampleBelow.Text = s.SampleSubscriptBelow.ToString();
@@ -1331,6 +1332,7 @@ public partial class MainWindow : Window
         s.BackupFolder = NullIfEmpty(SetBackupFolder.Text);
         s.SessionGapMinutes = int.TryParse(SetSessionGap.Text, out var gap) ? gap : 30;
         s.PopupTrigger = SetPopupTrigger.SelectedIndex == 1 ? PopupTrigger.Click : PopupTrigger.Hover;
+        s.WhenGgRunning = SetGgMode.SelectedIndex is 1 or 2 ? (GgCoexistence)SetGgMode.SelectedIndex : GgCoexistence.Continue;
         s.HoverDelayMs = int.TryParse(SetHoverDelay.Text, out var hd) ? Math.Clamp(hd, 0, 10_000) : 500;
         s.HoverHideMs = int.TryParse(SetHoverHide.Text, out var hh) ? Math.Clamp(hh, 0, 10_000) : 400;
         s.HudHotkey = string.IsNullOrWhiteSpace(SetHotkey.Text) ? "Ctrl+Alt+H" : SetHotkey.Text.Trim();

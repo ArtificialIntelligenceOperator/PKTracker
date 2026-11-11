@@ -14,6 +14,25 @@ public enum PopupTrigger
 }
 
 /// <summary>Настройки приложения: %APPDATA%\PKTracker\settings.json.</summary>
+/// <summary>
+/// Что делает трекер, пока запущен клиент сети GG. GG с 01.12.2026 запрещает сторонний покерный софт рядом со своим
+/// клиентом — программы, которые «обращаются к игровым данным, взаимодействуют со столами или автоматизируют действия»,
+/// включая HUD, — и проверяет запущенные процессы. Играют при этом на нескольких румах сразу, поэтому выбор за игроком.
+/// </summary>
+public enum GgCoexistence
+{
+    /// <summary>Работать как обычно: HUD и всё остальное для других румов продолжает работать — на риск игрока.</summary>
+    Continue,
+    /// <summary>
+    /// Выключить всё, что GG запрещает: оверлей и попапы, слежение за окнами столов, .data-канал, виджет сессии.
+    /// Остаётся только чтение файлов истории других румов с диска, чтобы статистика не отставала. Клиент GG закрыли —
+    /// всё включается обратно.
+    /// </summary>
+    Passive,
+    /// <summary>Закрыть PKTracker (и его MCP-сервер): рядом с клиентом GG не остаётся ни одного процесса трекера.</summary>
+    Exit,
+}
+
 public sealed class TrackerSettings
 {
     public string ConnectionString { get; set; } = "Host=localhost;Port=5433;Username=pktracker;Password=pktracker;Database=pktracker";
@@ -50,6 +69,11 @@ public sealed class TrackerSettings
     /// Решение и риск — на игроке; при запущенном клиенте GG импорт не идёт и с этим флажком.
     /// </summary>
     public bool ImportGgHands { get; set; }
+    /// <summary>
+    /// Режим совместной игры с GG: что делать, пока запущен её клиент. По умолчанию трекер продолжает работать
+    /// для других румов; «Passive» и «Exit» — для тех, кто хочет соблюдать правило GG о стороннем софте.
+    /// </summary>
+    public GgCoexistence WhenGgRunning { get; set; } = GgCoexistence.Continue;
     /// <summary>Раскладка, выбранная значком в реплеере: null — встроенная, особое значение — скрыт.</summary>
     public string? ReplayerProfile { get; set; }
     /// <summary>

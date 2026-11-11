@@ -11,6 +11,7 @@ builder.Logging.SetMinimumLevel(LogLevel.Warning);
 
 builder.Services.AddSingleton(McpOptions.FromArgs(args));
 builder.Services.AddSingleton<TrackerContext>();
+builder.Services.AddHostedService<GgCoexistenceWatch>();
 builder.Services
     .AddMcpServer(o =>
     {
