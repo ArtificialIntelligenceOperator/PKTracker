@@ -9,7 +9,8 @@ using PKTracker.Engine.Hud;
 namespace PKTracker.App.Hud;
 
 /// <summary>
-/// Попап профиля: слева список вкладок, справа сетка (§5.4).
+/// Попап профиля: слева группы вкладок, сверху вкладки группы, под ними сетка (§5.4).
+/// Профиль без групп выглядит как раньше: одна группа, вкладки сверху.
 ///
 /// Срез игрока читается один раз на открытие и держится в памяти окна: переключение вкладок
 /// не должно бить в базу, иначе за столом это ощущается как подвисание.
@@ -23,7 +24,16 @@ public sealed class ProfilePopupWindow : Window, IPinnable
     private readonly GameKind _kind;
     private readonly Dispatcher _ui;
 
+    private readonly ListBox _groups = new();
     private readonly ListBox _tabs = new();
+    // Подсказка под вкладками — светлым приглушённым текстом: тёмный по умолчанию на тёмном фоне попапа не виден.
+    private readonly TextBlock _note = new()
+    {
+        Margin = new Thickness(8, 2, 8, 0), FontSize = 11, TextWrapping = TextWrapping.Wrap,
+        Foreground = new SolidColorBrush(Color.FromRgb(0xA3, 0xA1, 0xBD)),
+    };
+    private readonly List<string?> _groupKeys = new();
+    private HudPage? _current;
     private readonly HudGridControl _grid = new();
     private readonly ScrollViewer _scroll;
     private readonly TextBlock _status = new() { Margin = new Thickness(8, 3, 8, 3), Opacity = 0.7, FontSize = 11 };
@@ -41,6 +51,22 @@ public sealed class ProfilePopupWindow : Window, IPinnable
     public event Action<Window>? PinToggled;
 
     private PlayerRows? _rows;
+    private HudPage? _startPage;
+
+    private void FillTabs()
+    {
+        if (_groups.SelectedIndex < 0) return;
+        var group = _groupKeys[_groups.SelectedIndex];
+        _tabs.Items.Clear();
+        int select = 0;
+        foreach (var page in _profile.Pages.Where(p => p.Group == group))
+        {
+            if (ReferenceEquals(page, _startPage)) select = _tabs.Items.Count;
+            _tabs.Items.Add(new ListBoxItem { Content = page.Name, Tag = page, Padding = new Thickness(10, 3, 10, 3) });
+        }
+        _startPage = null;
+        _tabs.SelectedIndex = _tabs.Items.Count > 0 ? select : -1;
+    }
     private readonly Dictionary<string, CellValue[]> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     public ProfilePopupWindow(TrackerHost host, Dispatcher ui, string playerName, long playerId, GameKind kind,
@@ -58,8 +84,11 @@ public sealed class ProfilePopupWindow : Window, IPinnable
         Width = 1000;
         Height = 700;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
+        Background = new SolidColorBrush(Color.FromRgb(0x15, 0x14, 0x24));
+        // Светлый текст по умолчанию: строка состояния и подписи наследуют его, иначе на тёмном фоне их не видно.
+        Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8));
         FontFamily = new FontFamily("Segoe UI");
+        Infrastructure.Win32.ApplyDarkFrame(this);
 
         _grid.Stats = host.Hud.Stats;
         // Наведение на ячейку попапа открывает разбивку её стата — это второй уровень HUD.
@@ -83,28 +112,50 @@ public sealed class ProfilePopupWindow : Window, IPinnable
             Padding = new Thickness(8),
         };
 
-        _tabs.Width = 140;
-        _tabs.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
-        _tabs.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
+        var panelBg = new SolidColorBrush(Color.FromRgb(0x1D, 0x1C, 0x30));
+        var fg = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8));
+        _groups.Width = 110;
+        _groups.Background = panelBg;
+        _groups.Foreground = fg;
+        _groups.BorderThickness = new Thickness(0);
+        foreach (var g in profile.Pages.Select(p => p.Group).Distinct())
+        {
+            _groupKeys.Add(g);
+            _groups.Items.Add(new ListBoxItem { Content = g ?? "Вкладки", FontWeight = FontWeights.SemiBold, Padding = new Thickness(8, 5, 8, 5) });
+        }
+        _groups.SelectionChanged += (_, _) => FillTabs();
+        // Вкладки группы — горизонтальной полосой, как в Hand2Note: группа слева, её вкладки сверху.
+        _tabs.Background = Brushes.Transparent;
+        _tabs.Foreground = fg;
         _tabs.BorderThickness = new Thickness(0);
-        foreach (var page in profile.Pages) _tabs.Items.Add(page.Name);
-        _tabs.SelectionChanged += (_, _) => ShowPage(_tabs.SelectedItem as string);
+        _tabs.ItemsPanel = new ItemsPanelTemplate(new FrameworkElementFactory(typeof(WrapPanel)));
+        // Без этого ListBox даёт панели бесконечную ширину, и WrapPanel ничего не переносит.
+        ScrollViewer.SetHorizontalScrollBarVisibility(_tabs, ScrollBarVisibility.Disabled);
+        _tabs.SelectionChanged += (_, _) => ShowPage((_tabs.SelectedItem as ListBoxItem)?.Tag as HudPage);
 
         var bottom = new DockPanel();
         DockPanel.SetDock(_pin, Dock.Right);
         bottom.Children.Add(_pin);
         bottom.Children.Add(_status);
 
+        var top = new StackPanel();
+        top.Children.Add(_tabs);
+        top.Children.Add(_note);
         var root = new DockPanel();
         DockPanel.SetDock(bottom, Dock.Bottom);
-        DockPanel.SetDock(_tabs, Dock.Left);
+        DockPanel.SetDock(_groups, Dock.Left);
+        DockPanel.SetDock(top, Dock.Top);
         root.Children.Add(bottom);
-        root.Children.Add(_tabs);
+        if (_groupKeys.Count > 1) root.Children.Add(_groups);
+        root.Children.Add(top);
         root.Children.Add(_scroll);
         Content = root;
 
-        int index = startPage != null ? profile.Pages.FindIndex(p => string.Equals(p.Name, startPage, StringComparison.OrdinalIgnoreCase)) : 0;
-        _tabs.SelectedIndex = index >= 0 ? index : 0;
+        // Ячейка панели ссылается на вкладку «группа/вкладка» или просто по имени.
+        var start = startPage != null ? profile.Page(startPage) : null;
+        _startPage = start ?? profile.Pages.FirstOrDefault();
+        int gi = _startPage != null ? _groupKeys.IndexOf(_startPage.Group) : 0;
+        _groups.SelectedIndex = gi >= 0 ? gi : 0;
 
         Loaded += (_, _) => _ = LoadAsync();
     }
@@ -123,7 +174,7 @@ public sealed class ProfilePopupWindow : Window, IPinnable
                 _status.Text = rows.Truncated
                     ? $"Раздач: {rows.Facts.Count}, решений: {rows.Decisions.Count} (выборка урезана лимитом)"
                     : $"Раздач: {rows.Facts.Count}, решений: {rows.Decisions.Count}";
-                ShowPage(_tabs.SelectedItem as string);
+                ShowPage(_current);
             });
         }
         catch (Exception ex)
@@ -135,14 +186,18 @@ public sealed class ProfilePopupWindow : Window, IPinnable
     /// <summary>Что открыть при наведении на ячейку: разбивку её стата. У подписи стата нет.</summary>
     private PopupTarget? Target(int index)
     {
-        if (_tabs.SelectedItem is not string name || _profile.Page(name) is not { } page) return null;
+        if (_current is not { } page) return null;
         if (index < 0 || index >= page.Cells.Count || page.Cells[index].Stat is not { } code) return null;
         return new PopupTarget { PlayerId = _playerId, PlayerName = _playerName, Kind = _kind, StatCode = code };
     }
 
-    private void ShowPage(string? name)
+    private void ShowPage(HudPage? page)
     {
-        if (name == null || _profile.Page(name) is not { } page) return;
+        if (page == null) return;
+        _current = page;
+        _note.Text = page.Note ?? "";
+        _note.Visibility = string.IsNullOrEmpty(page.Note) ? Visibility.Collapsed : Visibility.Visible;
+        var name = HudProfile.PageKey(page);
         if (_rows == null)
         {
             _grid.Render(page, null);

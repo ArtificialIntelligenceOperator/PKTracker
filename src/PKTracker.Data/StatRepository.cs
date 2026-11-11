@@ -83,6 +83,49 @@ public sealed class StatRepository(TrackerDb db)
         return def;
     }
 
+    /// <summary>
+    /// Пакетное сохранение (импорт пакета HUD): одна компиляция на всех и одна транзакция. Определения,
+    /// не изменившиеся по тексту, не трогаются — иначе версия выросла бы и стат пересчитывался бы зря.
+    /// </summary>
+    /// <returns>Коды добавленных и изменённых статов.</returns>
+    public async Task<List<string>> SaveManyAsync(IReadOnlyList<StatDefinition> defs, CancellationToken ct = default)
+    {
+        var existing = (await LoadActiveAsync(ct: ct)).ToDictionary(d => d.Code);
+        // Встроенные — все, включая выключенные: LoadActive их не вернёт, а ON CONFLICT молча перезаписал бы определение.
+        var builtin = existing.Values.Where(e => e.IsBuiltin).Select(e => e.Code).ToHashSet();
+        await using (var bc = await db.Import.OpenConnectionAsync(ct))
+        await using (var cmd0 = new NpgsqlCommand("SELECT code FROM stat_definition WHERE is_builtin", bc))
+        await using (var r0 = await cmd0.ExecuteReaderAsync(ct))
+            while (await r0.ReadAsync(ct)) builtin.Add(r0.GetString(0));
+        foreach (var d in defs)
+            if (builtin.Contains(d.Code)) throw new StatCompileException(d.Code, "код занят встроенным статом");
+        var known = new Dictionary<string, StatDefinition>(existing);
+        foreach (var d in defs) known[d.Code] = d;
+        foreach (var d in defs) StatCompiler.Compile(d, known); // бросит StatCompileException — пакет не применится
+
+        var changed = defs.Where(d => !existing.TryGetValue(d.Code, out var e) || e.ToJson() != d.ToJson()).ToList();
+        if (changed.Count == 0) return new List<string>();
+        await using var conn = await db.Import.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        foreach (var def in changed)
+        {
+            await using var cmd = new NpgsqlCommand("""
+                INSERT INTO stat_definition (code, title, scope, definition, is_builtin)
+                VALUES ($1, $2, $3, $4, false)
+                ON CONFLICT (code) DO UPDATE
+                   SET title = EXCLUDED.title, scope = EXCLUDED.scope, definition = EXCLUDED.definition,
+                       version = stat_definition.version + 1, is_active = true
+                """, conn, tx);
+            cmd.Parameters.AddWithValue(def.Code);
+            cmd.Parameters.AddWithValue(def.Title);
+            cmd.Parameters.AddWithValue((short)def.Scope);
+            cmd.Parameters.Add(new NpgsqlParameter { Value = def.ToJson(), NpgsqlDbType = NpgsqlDbType.Jsonb });
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        await tx.CommitAsync(ct);
+        return changed.Select(d => d.Code).ToList();
+    }
+
     /// <summary>Статы, чьи агрегаты посчитаны не той версией определения или отсутствуют.</summary>
     /// <summary>
     /// Сколько раздач разобрано старой версией построителя контекста.

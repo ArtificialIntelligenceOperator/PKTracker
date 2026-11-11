@@ -61,6 +61,14 @@ python tools/mcp_smoke_test.py                          # MCP-сервер от�
 
 ## Частые задачи
 
+- **Сверка статов с другим трекером** — `cli lab <папка> --hero <ник> --pack <пакет> --page <вкладка>`
+  (считает по файлам, без базы) или `--opp/--hit/--group` для разового стата. Личные пакеты HUD и метки —
+  в `private/` (в `.gitignore`) и в `%APPDATA%\PKTracker`, в репозиторий не попадают.
+- **Правила румов для HUD** — `docs/ROOM_RULES.md`, `RoomHudPolicy`.
+- **Аналитика** — вкладка `src/PKTracker.App/Views/AnalyticsView.cs`, запросы `src/PKTracker.Data/AnalyticsRepository.cs`;
+  класс готовой руки — `src/PKTracker.Engine/MadeHand.cs` (колонка `hand_decisions.made_hand`).
+- **Проверка интерфейса без стола** — `PKTracker.exe --preview <ник> [группа/вкладка] [код стата]` и `--tab <вкладка>`.
+
 - **Новый рум** — `docs/ADDING_A_ROOM.md`.
 - **Новый стат** — `docs/STATS.md`; хранится в базе, код менять не нужно. Разрез по позиции, стеку
   или числу игроков — это фильтр ячейки раскладки, а не новый стат.

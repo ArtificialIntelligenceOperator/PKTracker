@@ -21,7 +21,11 @@ public sealed class AppServices : IAsyncDisposable
 
     public TrackerSettings Settings { get; private set; } = TrackerSettings.Load();
     public TrackerHost? Host { get; private set; }
+    /// <summary>Каталог цветовых меток пользователя (%APPDATA%\PKTracker\markers.json).</summary>
+    public PKTracker.Data.Notes.MarkerCatalog Markers { get; set; } = PKTracker.Data.Notes.MarkerCatalog.Load();
     public HudManager Hud { get; }
+    /// <summary>Виджет текущей сессии поверх столов; null — выключен.</summary>
+    public SessionWidget? Session { get; private set; }
     public ObservableCollection<string> LogLines { get; } = new();
     public string DbStatus { get; private set; } = "не подключено";
     /// <summary>Раздач со старым ContextVersion; > 0 — нужен полный ребилд.</summary>
@@ -33,6 +37,7 @@ public sealed class AppServices : IAsyncDisposable
 
     public AppServices(Dispatcher ui)
     {
+        ApplyDisplayOptions(Settings);
         _ui = ui;
         Hud = new HudManager(this, ui);
     }
@@ -97,7 +102,32 @@ public sealed class AppServices : IAsyncDisposable
         _backupTimer = new System.Threading.Timer(_ => _ = AutoBackupAsync(), null, TimeSpan.FromMinutes(2), TimeSpan.FromHours(1));
         Hud.Enabled = Settings.HudEnabled;
         Hud.Start();
+        ApplySessionWidget();
         RaiseStatus();
+    }
+
+    /// <summary>Показать или убрать виджет сессии по настройке. Только из UI-потока.</summary>
+    public void ApplySessionWidget()
+    {
+        if (Settings.SessionWidget && Host != null)
+        {
+            if (Session != null) { _ = Session.RefreshAsync(); return; }
+            Session = new SessionWidget(this);
+            Session.Dismissed += () =>
+            {
+                Settings.SessionWidget = false;
+                try { Settings.Save(); }
+                catch (IOException ex) { Log("App", "Настройки не сохранены: " + ex.Message); }
+                ApplySessionWidget();
+                RaiseStatus();
+            };
+            Session.Show();
+        }
+        else
+        {
+            Session?.Close();
+            Session = null;
+        }
     }
 
     private void StartWatcher()
@@ -119,6 +149,7 @@ public sealed class AppServices : IAsyncDisposable
             _ui.InvokeAsync(() =>
             {
                 Hud.OnHandsImported(e.Result.AffectedPlayers);
+                _ = Session?.RefreshAsync();
                 HandsImported?.Invoke(e.Result);
             });
         };
@@ -178,6 +209,7 @@ public sealed class AppServices : IAsyncDisposable
             bool hudChanged = fresh.CashStats != Settings.CashStats || fresh.MttStats != Settings.MttStats
                               || fresh.PopupTrigger != Settings.PopupTrigger || Math.Abs(fresh.PanelOpacity - Settings.PanelOpacity) > 0.001;
             Settings = fresh;
+            ApplyDisplayOptions(fresh);
             if (Host != null && trigger == "reload.signal")
             {
                 await Host.ReloadAsync();
@@ -208,9 +240,19 @@ public sealed class AppServices : IAsyncDisposable
     {
         Settings = s;
         s.Save();
+        ApplyDisplayOptions(s);
     }
 
-    public static string BackupFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PKTracker", "backups");
+    /// <summary>Вид значений в ячейках HUD — общий для панели, попапов и редактора.</summary>
+    public static void ApplyDisplayOptions(TrackerSettings s) =>
+        PKTracker.Engine.Hud.CellRender.Options = new PKTracker.Engine.Hud.CellRenderOptions
+        {
+            SampleSubscriptBelow = s.SampleSubscriptBelow, Cap100To99 = s.Cap100To99,
+        };
+
+    public static string DefaultBackupFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PKTracker", "backups");
+    /// <summary>Папка бэкапов: из настроек, иначе «Документы». Системный диск бывает тесным — путь должен переноситься.</summary>
+    public string BackupFolder => string.IsNullOrWhiteSpace(Settings.BackupFolder) ? DefaultBackupFolder : Settings.BackupFolder!;
 
     private int _backupRunning;
 

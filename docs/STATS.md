@@ -89,6 +89,20 @@ Nullable-поля сравниваются с `null`: `EvNetWon != null`, `HandS
 | `RaiseRatio` | double | во сколько раз собственный рейз перекрывает ставку оппонента: 2 — минрейз |
 | `ToCallBb`, `PotBb` | double | доплата и банк в bb |
 | `MyLine` | string | собственная линия на прошлых улицах постфлопа: `""`, `"B"`, `"BX"`, `"XC"`… (X чек, B ставка, C колл, R рейз) |
+| `PfaLine` | string | линия префлоп-агрессора на прошлых улицах (коллеру видно «ставка-чек», «XB»…) |
+| `OppLine` | string | линия единственного оппонента в хедз-ап банке; в мультипоте пусто |
+| `Spot` | string | постфлоп-спот: `RvBB`, `RvSB`, `RvCC`, `RvCCBB`, `3BP_IP`, `3BP_OOP`, `BvB_L` (лимп SB — чек BB), `BvB_R` (рейз SB — колл BB), `BvB_LC` (лимп SB — изолейт BB — колл), `3way`, `MW` |
+| `PotRaises` / `PotType` | int / string | рейзов префлоп (постфлоп — всего, префлоп — до решения) / `Limp`, `SRP`, `3BP`, `4BP` |
+| `PfrPosition`, `PfrNotBlind` | Position / bool | позиция префлоп-агрессора |
+| `FlopPlayers`, `BbInPot`, `SbInPot` | int / bool | кто увидел флоп |
+| `VsStackBb` | double | стартовый стек последнего агрессора («3-бет против 12-16bb») |
+| `StartEffBb` | double | эффективный стек по стартовым стекам против всех сданных (как «eff» в Hand2Note) |
+| `WasSqueeze`, `CallersBefore3b` | bool / int | 3-бет в раздаче был сквизом |
+| `HPos`, `HVsPos`, `HOpenPos`, `HPfrPos` | string | позиции в обозначениях Hand2Note: UTG / MP / HJ / CO / BTN (в 6-max первая — MP) |
+| `Made` | MadeHandClass | рука на этой улице относительно борда: `NoPair`, `Overcards`, `Underpair`, `BottomPair`, `MiddlePair`, `TopPair`, `Overpair`, `TwoPair`, `Trips`, `Set`, `Straight`, `Flush`, `FullHouse`, `Quads`, `StraightFlush`; `Unknown` — карты не вскрыты. Пара на борде рукой не считается |
+| `MadeKnown`, `StrongMade`, `GoodKicker` | bool | карты известны / топ-пара и выше / топ-пара с кикером от валета |
+| `FlushDraw`, `Oesd`, `Gutshot`, `AnyDraw` | bool | дро на флопе и тёрне: флеш-дро, 8 аутов на стрит, гатшот (дро «на борде» не считается) |
+| `HandWon`, `WentToShowdown`, `WonAtShowdown` | bool | исход раздачи для игрока, видимый из точки решения: «выиграл без вскрытия в банке рейзер против BB» — `Spot=="RvBB" && FirstActionOnStreet`, hit `!WentToShowdown && HandWon` |
 | `Hand.*` | | сведения о раздаче, см. ниже |
 
 ## Поля HandPlayerFacts (scope = hand, фильтр поиска рук)

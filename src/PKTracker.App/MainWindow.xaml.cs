@@ -7,6 +7,7 @@ using PKTracker.Core.Model;
 using PKTracker.Data;
 using PKTracker.Data.Import;
 using PKTracker.App.Hud;
+using PKTracker.App.Views;
 using PKTracker.Engine.Hud;
 using PKTracker.Engine.Stats;
 
@@ -43,6 +44,7 @@ public partial class MainWindow : Window
     private int _handsPage;
     private const int HandsPageSize = 200;
     private PlayerSearchRow? _selectedPlayer;
+    private bool _overviewAutoSwitched;
 
     public MainWindow(AppServices svc)
     {
@@ -56,6 +58,7 @@ public partial class MainWindow : Window
         TourneyPositionFilter.ItemsSource = new[] { "Все" }.Concat(Enum.GetNames<Position>().Where(p => p != nameof(Position.None))).ToList();
         TourneyPositionFilter.SelectedIndex = 0;
         Reports.Attach(svc);
+        Analytics.Attach(svc);
         _svc.StatusChanged += OnServicesStatus;
         _svc.HandsImported += result => { if (Tabs.SelectedItem == OverviewTab) _ = LoadOverviewAsync(); };
         _svc.Hud.StatusChanged += () => { if (Tabs.SelectedItem == HudTab) LoadHudTab(); };
@@ -117,6 +120,7 @@ public partial class MainWindow : Window
             else if (Tabs.SelectedItem == SessionsTab) await LoadSessionsAsync();
             else if (Tabs.SelectedItem == TournamentsTab) await LoadTournamentsAsync();
             else if (Tabs.SelectedItem == ReportsTab) await Reports.ReloadAsync();
+            else if (Tabs.SelectedItem == AnalyticsTab) await Analytics.ReloadAsync();
             else if (Tabs.SelectedItem == HandsTab && HandsGrid.ItemsSource == null) await LoadHandsAsync();
             else if (Tabs.SelectedItem == HudTab) { LoadHudTab(); LoadProfileEditor(); ReloadHudProfileList(); }
             else if (Tabs.SelectedItem == LeaksTab) await LoadLeaksAsync();
@@ -154,6 +158,19 @@ public partial class MainWindow : Window
         int gap = _svc.Settings.SessionGapMinutes;
         var reports = new ReportRepository(host.Db);
         var overview = await Bg(() => reports.OverviewAsync(kind, gap));
+        // Первый показ: если в выбранном виде игры раздач нет, а в другом есть — переключаемся сами,
+        // чтобы турнирный игрок не видел пустой «Кеш» при каждом запуске.
+        if (overview.Hands == 0 && !_overviewAutoSwitched)
+        {
+            _overviewAutoSwitched = true;
+            var other = kind == GameKind.Cash ? GameKind.Mtt : GameKind.Cash;
+            var alt = await Bg(() => reports.OverviewAsync(other, gap));
+            if (alt.Hands > 0)
+            {
+                OverviewKind.SelectedIndex = other == GameKind.Mtt ? 1 : 0;
+                return; // смена выбора сама перезагрузит обзор
+            }
+        }
         var graph = await Bg(() => reports.GraphAsync(kind));
         var byPos = await Bg(() => reports.ByPositionAsync(kind));
         var byLimit = kind == GameKind.Cash ? await Bg(() => reports.ByLimitAsync()) : new List<GroupRow>();
@@ -192,11 +209,11 @@ public partial class MainWindow : Window
                 if (graph[i].Showdown) b += v; else c += v;
                 net[i] = a; sd[i] = b; nonSd[i] = c;
             }
-            var s1 = plot.Add.Signal(net); s1.LegendText = "Net won, bb"; s1.LineWidth = 2.5f; s1.Color = ScottPlot.Color.FromHex("#E3A45A");
-            var s2 = plot.Add.Signal(sd); s2.LegendText = "На шоудауне"; s2.LineWidth = 1.5f; s2.Color = ScottPlot.Color.FromHex("#7FA7C9");
-            var s3 = plot.Add.Signal(nonSd); s3.LegendText = "Без шоудауна"; s3.LineWidth = 1.5f; s3.Color = ScottPlot.Color.FromHex("#D9674E");
-            var s4 = plot.Add.Signal(evLine); s4.LegendText = kind == GameKind.Cash ? "All-in EV, bb" : "Chip EV, bb"; s4.LineWidth = 2; s4.Color = ScottPlot.Color.FromHex("#8CC084");
-            var zero = plot.Add.HorizontalLine(0); zero.Color = ScottPlot.Color.FromHex("#5A4A3E"); zero.LinePattern = ScottPlot.LinePattern.Dashed;
+            var s1 = plot.Add.Signal(net); s1.LegendText = "Net won, bb"; s1.LineWidth = 2.5f; s1.Color = ScottPlot.Color.FromHex("#9C92F8");
+            var s2 = plot.Add.Signal(sd); s2.LegendText = "На шоудауне"; s2.LineWidth = 1.5f; s2.Color = ScottPlot.Color.FromHex("#5BB8F0");
+            var s3 = plot.Add.Signal(nonSd); s3.LegendText = "Без шоудауна"; s3.LineWidth = 1.5f; s3.Color = ScottPlot.Color.FromHex("#F0708C");
+            var s4 = plot.Add.Signal(evLine); s4.LegendText = kind == GameKind.Cash ? "All-in EV, bb" : "Chip EV, bb"; s4.LineWidth = 2; s4.Color = ScottPlot.Color.FromHex("#3ECF8E");
+            var zero = plot.Add.HorizontalLine(0); zero.Color = ScottPlot.Color.FromHex("#524F7A"); zero.LinePattern = ScottPlot.LinePattern.Dashed;
             plot.ShowLegend();
             plot.Axes.Bottom.Label.Text = "Раздачи";
             plot.Axes.Left.Label.Text = "bb";
@@ -212,13 +229,13 @@ public partial class MainWindow : Window
     /// <summary>Тёмно-коричневая тема графика в тон приложению.</summary>
     internal static void ApplyPlotTheme(ScottPlot.Plot plot)
     {
-        plot.FigureBackground.Color = ScottPlot.Color.FromHex("#211A15");
-        plot.DataBackground.Color = ScottPlot.Color.FromHex("#1A1411");
-        plot.Axes.Color(ScottPlot.Color.FromHex("#A8998A"));
-        plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#33291F");
-        plot.Legend.BackgroundColor = ScottPlot.Color.FromHex("#2B221C");
-        plot.Legend.FontColor = ScottPlot.Color.FromHex("#EFE6DA");
-        plot.Legend.OutlineColor = ScottPlot.Color.FromHex("#40332A");
+        plot.FigureBackground.Color = ScottPlot.Color.FromHex("#1D1C30");
+        plot.DataBackground.Color = ScottPlot.Color.FromHex("#171626");
+        plot.Axes.Color(ScottPlot.Color.FromHex("#A3A1BD"));
+        plot.Grid.MajorLineColor = ScottPlot.Color.FromHex("#2C2A47");
+        plot.Legend.BackgroundColor = ScottPlot.Color.FromHex("#25243C");
+        plot.Legend.FontColor = ScottPlot.Color.FromHex("#F1F0F8");
+        plot.Legend.OutlineColor = ScottPlot.Color.FromHex("#37355A");
         plot.Legend.Alignment = ScottPlot.Alignment.UpperLeft;
     }
 
@@ -396,9 +413,9 @@ public partial class MainWindow : Window
             var xs = new double[g.Hands];
             for (int i = 0; i < g.Hands; i++) xs[i] = i + 1;
             float marker = g.Hands > 200 ? 0 : g.Hands > 40 ? 2 : g.Hands == 1 ? 8 : 4;
-            var s1 = plot.Add.Scatter(xs, g.Chips); s1.LegendText = "Фишки (факт)"; s1.LineWidth = 2.5f; s1.MarkerSize = marker; s1.Color = ScottPlot.Color.FromHex("#E3A45A");
-            var s2 = plot.Add.Scatter(xs, g.ChipEv); s2.LegendText = "Chip EV"; s2.LineWidth = 2; s2.MarkerSize = marker; s2.Color = ScottPlot.Color.FromHex("#8CC084");
-            var zero = plot.Add.HorizontalLine(0); zero.Color = ScottPlot.Color.FromHex("#5A4A3E"); zero.LinePattern = ScottPlot.LinePattern.Dashed;
+            var s1 = plot.Add.Scatter(xs, g.Chips); s1.LegendText = "Фишки (факт)"; s1.LineWidth = 2.5f; s1.MarkerSize = marker; s1.Color = ScottPlot.Color.FromHex("#9C92F8");
+            var s2 = plot.Add.Scatter(xs, g.ChipEv); s2.LegendText = "Chip EV"; s2.LineWidth = 2; s2.MarkerSize = marker; s2.Color = ScottPlot.Color.FromHex("#3ECF8E");
+            var zero = plot.Add.HorizontalLine(0); zero.Color = ScottPlot.Color.FromHex("#524F7A"); zero.LinePattern = ScottPlot.LinePattern.Dashed;
             plot.ShowLegend();
             plot.Axes.Bottom.Label.Text = "Раздачи";
             plot.Axes.Left.Label.Text = "Фишки";
@@ -597,15 +614,61 @@ public partial class MainWindow : Window
 
     private async void PlayerSearch_Click(object sender, RoutedEventArgs e)
     {
+        try { await SearchPlayersAsync(); }
+        catch (Exception ex) { _svc.Log("Players", "Поиск игроков: " + ex.Message); }
+    }
+
+    /// <summary>Перечитать список игроков; <paramref name="reselect"/> — кого оставить выбранным.</summary>
+    private async Task SearchPlayersAsync(long? reselect = null)
+    {
         var host = Host;
         if (host == null) return;
         var q = PlayerSearchBox.Text.Trim();
-        PlayersGrid.ItemsSource = await Bg(() => new ReportRepository(host.Db).SearchPlayersAsync(q));
+        var rows = await Bg(() => new ReportRepository(host.Db).SearchPlayersAsync(q));
+        var notes = await Bg(() => host.Notes.GetAllAsync());
+        PlayersGrid.ItemsSource = rows.Select(r =>
+        {
+            var n = notes.GetValueOrDefault(r.PlayerId);
+            var m = n?.Marker is { } id ? _svc.Markers.Find(id) : null;
+            return new PlayerListItem(r, m != null ? PlayerMarkerMenu.Brush(m.Color) : System.Windows.Media.Brushes.Transparent, m?.Title, n?.Caption);
+        }).ToList();
+        if (reselect is { } id && PlayersGrid.Items.OfType<PlayerListItem>().FirstOrDefault(i => i.Row.PlayerId == id) is { } again)
+        {
+            PlayersGrid.SelectedItem = again;
+            PlayersGrid.ScrollIntoView(again);
+        }
+    }
+
+    /// <summary>Строка списка игроков с меткой: цвет, тип и подпись — как над столом.</summary>
+    public sealed record PlayerListItem(PlayerSearchRow Row, System.Windows.Media.Brush MarkerColor, string? MarkerTitle, string? Caption)
+    {
+        public string Nickname => Row.Nickname;
+        public long Hands => Row.Hands;
+    }
+
+    private async void PlayersGrid_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        // Игрок — по строке под курсором: правый клик строку не выделяет, и метка ушла бы ранее выбранному.
+        if (Host is not { } host) return;
+        if (ItemsControl.ContainerFromElement(PlayersGrid, e.OriginalSource as DependencyObject) is not DataGridRow { Item: PlayerListItem item }) return;
+        PlayersGrid.SelectedItem = item;
+        long id = item.Row.PlayerId;
+        try
+        {
+            var menu = await PlayerMarkerMenu.BuildAsync(_svc, host, id, item.Row.Nickname, async () =>
+            {
+                try { await SearchPlayersAsync(id); }
+                catch (Exception ex) { _svc.Log("Players", "Список игроков: " + ex.Message); }
+                _svc.Hud.RefreshAll();
+            });
+            menu.IsOpen = true;
+        }
+        catch (Exception ex) { _svc.Log("Players", "Меню метки: " + ex.Message); }
     }
 
     private async void PlayersGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        _selectedPlayer = PlayersGrid.SelectedItem as PlayerSearchRow;
+        _selectedPlayer = (PlayersGrid.SelectedItem as PlayerListItem)?.Row;
         await LoadPlayerAsync();
     }
 
@@ -742,7 +805,7 @@ public partial class MainWindow : Window
         {
             if (item.Code == "|") { row = new WrapPanel { MaxWidth = 220 }; ProfilePreview.Children.Add(row); continue; }
             var def = host.Stats.First(s => s.Code == item.Code).Definition;
-            var color = def.Colors.Count > 1 ? def.Colors[1].Color : "#EFE6DA";
+            var color = def.Colors.Count > 1 ? def.Colors[1].Color : "#F1F0F8";
             row.Children.Add(new TextBlock
             {
                 Text = $"{def.Title} {(item.Code == "hands" ? "352" : "27")}", Margin = new Thickness(0, 0, 6, 0), FontSize = 11,
@@ -872,6 +935,8 @@ public partial class MainWindow : Window
     private void LoadHudTab()
     {
         HudEnabledBox.IsChecked = _svc.Hud.Enabled;
+        SessionWidgetBox.IsChecked = _svc.Settings.SessionWidget;
+        AutoProfileBox.IsChecked = _svc.Settings.AutoProfileBySeats;
         HudWindowsGrid.ItemsSource = _svc.Hud.Status();
         ActiveTablesGrid.ItemsSource = _svc.Hud.ActiveTables;
     }
@@ -1096,6 +1161,10 @@ public partial class MainWindow : Window
     {
         var s = _svc.Settings;
         SetConn.Text = s.ConnectionString;
+        // Список румов — из реестра парсеров: новый формат появляется здесь без правки разметки.
+        if (SetRoom.Items.Count == 0)
+            foreach (var room in PKTracker.Parsers.ParserRegistry.Rooms)
+                SetRoom.Items.Add(new ComboBoxItem { Content = room.Code, ToolTip = room.Title });
         SetRoom.SelectedItem = SetRoom.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (string)i.Content == s.RoomCode) ?? SetRoom.Items[0];
         SetHhFolder.Text = s.HandHistoryFolder ?? "";
         SetDataFolder.Text = s.LiveDataFolder ?? "";
@@ -1110,6 +1179,8 @@ public partial class MainWindow : Window
         SetPopupTrigger.SelectedIndex = s.PopupTrigger == PopupTrigger.Click ? 1 : 0;
         UpdatePopupTriggerFields();
         SetHoverDelay.Text = s.HoverDelayMs.ToString();
+        SetSampleBelow.Text = s.SampleSubscriptBelow.ToString();
+        SetCap99.IsChecked = s.Cap100To99;
         SetHoverHide.Text = s.HoverHideMs.ToString();
         SetHotkey.Text = s.HudHotkey;
         SetBackupDays.Text = s.AutoBackupDays.ToString();
@@ -1144,6 +1215,13 @@ public partial class MainWindow : Window
             HoverDelayMs = int.TryParse(SetHoverDelay.Text, out var hd) ? Math.Clamp(hd, 0, 10_000) : 500,
             HoverHideMs = int.TryParse(SetHoverHide.Text, out var hh) ? Math.Clamp(hh, 0, 10_000) : 400,
             HudHotkey = string.IsNullOrWhiteSpace(SetHotkey.Text) ? "Ctrl+Alt+H" : SetHotkey.Text.Trim(),
+            SampleSubscriptBelow = int.TryParse(SetSampleBelow.Text, out var sb) ? Math.Clamp(sb, 0, 1000) : 10,
+            Cap100To99 = SetCap99.IsChecked == true,
+            McpAnonymizeOpponents = _svc.Settings.McpAnonymizeOpponents, McpAllowWrites = _svc.Settings.McpAllowWrites,
+            ReplayerHud = _svc.Settings.ReplayerHud, ReplayerProfile = _svc.Settings.ReplayerProfile,
+            ReplayerPanelOffsets = _svc.Settings.ReplayerPanelOffsets,
+            ReplayerBadgeX = _svc.Settings.ReplayerBadgeX, ReplayerBadgeY = _svc.Settings.ReplayerBadgeY,
+            CashProfile = _svc.Settings.CashProfile, MttProfile = _svc.Settings.MttProfile,
             AutoBackupDays = int.TryParse(SetBackupDays.Text, out var bd) ? Math.Max(0, bd) : 1,
             KeepBackups = int.TryParse(SetKeepBackups.Text, out var kb) ? Math.Max(1, kb) : 7,
         };

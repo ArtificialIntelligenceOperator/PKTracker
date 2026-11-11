@@ -75,8 +75,19 @@ public sealed class HudManager : IDisposable
         }
     }
 
+    /// <summary>Разрешён ли оверлей правилами активного рума (GG — нет).</summary>
+    private bool Allowed => _svc.Host is not { } h || RoomHudPolicy.For(h.Db.RoomCode).HudAllowed;
+
     public void Start()
     {
+        if (_svc.Host is { } h && !RoomHudPolicy.For(h.Db.RoomCode).HudAllowed)
+        {
+            // Рум могли сменить при работающем приложении: панели прежнего рума убираем.
+            CloseAllPanels();
+            // Импорт и анализ работают, но оверлей над столом этого рума запрещён его правилами.
+            _svc.Log("Hud", "HUD над столом выключен: " + RoomHudPolicy.For(h.Db.RoomCode).Summary);
+            return;
+        }
         _tracker.Start();
         _ = RefreshTablesAsync();
     }
@@ -171,6 +182,12 @@ public sealed class HudManager : IDisposable
     private void Rebind()
     {
         if (!_enabled) return;
+        // Трекер окон мог быть запущен ещё при разрешённом руме — запрет проверяем при каждой привязке.
+        if (!Allowed)
+        {
+            if (_bound.Count > 0) CloseAllPanels();
+            return;
+        }
         var alive = new HashSet<IntPtr>(_tracker.Windows.Select(w => w.Hwnd));
         foreach (var gone in _bound.Keys.Where(k => !alive.Contains(k)).ToList())
         {
@@ -277,6 +294,17 @@ public sealed class HudManager : IDisposable
                 // закрывался бы в тот момент, когда мышь пересекает такую ячейку по дороге к нему.
                 panel.CellLeave += (p, _, popup) => { if (Target(b, p, popup) is { } t) _popups.Leave(t); };
                 panel.DraggedBy += (p, dx, dy) => OnDragged(b, p, dx, dy);
+                panel.MenuRequested += async p =>
+                {
+                    if (_svc.Host is not { } host || p.PlayerId == 0) return;
+                    try
+                    {
+                        // Тот же игрок может сидеть и за другим столом — обновляем все панели.
+                        var menu = await Views.PlayerMarkerMenu.BuildAsync(_svc, host, p.PlayerId, p.PlayerName, () => _ui.InvokeAsync(RefreshAll));
+                        menu.IsOpen = true;
+                    }
+                    catch (Exception ex) { _svc.Log("Hud", "Меню метки: " + ex.Message); }
+                };
                 b.Panels[seat] = panel;
                 panel.SetPlayer(name, pid);
                 panel.Show();
@@ -343,6 +371,7 @@ public sealed class HudManager : IDisposable
     {
         _cashProfile = null;
         _mttProfile = null;
+        _paired.Clear();
         foreach (var b in _bound.Values)
         {
             foreach (var p in b.Panels.Values) p.Close();
@@ -358,6 +387,27 @@ public sealed class HudManager : IDisposable
         ? _cashProfile ??= Resolve(_svc.Settings.CashProfile, GameKind.Cash)
         : _mttProfile ??= Resolve(_svc.Settings.MttProfile, GameKind.Mtt);
 
+    private readonly Dictionary<(GameKind, bool), HudProfile> _paired = new();
+
+    /// <summary>
+    /// Раскладка для конкретного стола. Раскладки часто идут парами «…9max…» / «…6max…»: статы в них отфильтрованы
+    /// по числу игроков, и на шестиместном столе панель «9max» показывала бы чужую выборку. Если выбранная
+    /// раскладка — одна из такой пары и вторая сохранена, для стола берётся подходящая по числу мест.
+    /// Размер стола по ходу раздачи не меняется — это не «динамический» HUD.
+    /// </summary>
+    private HudProfile Profile(BoundTable b)
+    {
+        var basic = Profile(b.Kind);
+        if (!_svc.Settings.AutoProfileBySeats || b.MaxSeats <= 0) return basic;
+        bool small = b.MaxSeats <= 6;
+        if (_paired.TryGetValue((b.Kind, small), out var hit)) return hit;
+        string want = small ? "6max" : "9max", other = small ? "9max" : "6max";
+        var result = basic;
+        int at = basic.Name.IndexOf(other, StringComparison.OrdinalIgnoreCase);
+        if (at >= 0 && _profiles.Load(basic.Name[..at] + want + basic.Name[(at + other.Length)..]) is { } twin) result = twin;
+        return _paired[(b.Kind, small)] = result;
+    }
+
     private HudProfile Resolve(string? name, GameKind kind)
     {
         if (name == HudProfile.LegacyName)
@@ -372,6 +422,13 @@ public sealed class HudManager : IDisposable
     /// </summary>
     private bool PanelsHidden(GameKind kind) => Current(kind) == ProfileBadge.Hidden;
 
+    /// <summary>Перерисовать все панели (поменялись метки или вид статов).</summary>
+    public void RefreshAll()
+    {
+        _svc.Host?.Notes.Invalidate();
+        RefreshAllStats();
+    }
+
     private void RefreshAllStats()
     {
         foreach (var b in _bound.Values) RefreshStats(b, b.Panels.Values.ToList());
@@ -382,7 +439,9 @@ public sealed class HudManager : IDisposable
         var host = _svc.Host;
         if (host == null || panels.Count == 0) return;
         var kind = b.Kind;
-        var page = Profile(kind).Panel;
+        var profile = Profile(b);
+        var page = profile.Panel;
+        var pages = profile.AllPanelPages().ToList();
         var work = panels.Select(p => (Panel: p, p.PlayerId)).ToList();
         _ = Task.Run(async () =>
         {
@@ -390,7 +449,11 @@ public sealed class HudManager : IDisposable
             {
                 if (pid == 0)
                 {
-                    await _ui.InvokeAsync(() => panel.SetPage(page, null, 0), DispatcherPriority.Background);
+                    await _ui.InvokeAsync(() =>
+                    {
+                        panel.SetPages(pages, null, 0);
+                        panel.SetMarker(null, null, null);
+                    }, DispatcherPriority.Background);
                     continue;
                 }
                 try
@@ -398,13 +461,16 @@ public sealed class HudManager : IDisposable
                     // Панель читает только агрегаты: девять игроков на шести столах по normalized
                     // не уложились бы в отрисовку между раздачами (§3.1, §15.9).
                     var agg = await host.Hud.GetAggAsync(pid, kind);
-                    var values = agg.EvaluatePage(page);
+                    var values = pages.Select(pg => (CellValue[]?)agg.EvaluatePage(pg)).ToList();
                     long hands = agg.Evaluate("hands", null).Cases;
+                    var note = await host.Notes.GetAsync(pid);
                     await _ui.InvokeAsync(() =>
                     {
                         if (panel.PlayerId != pid) return;
                         panel.Stats = host.Hud.Stats;
-                        panel.SetPage(page, values, hands);
+                        panel.SetPages(pages, values, hands);
+                        var m = note?.Marker is { } mk ? _svc.Markers.Find(mk) : null;
+                        panel.SetMarker(m?.Color, m?.Title, note?.Caption, m?.Hint);
                         if (_bound.TryGetValue(b.Window.Hwnd, out var bt)) Reposition(new[] { bt.Window });
                     }, DispatcherPriority.Background);
                 }
@@ -424,7 +490,7 @@ public sealed class HudManager : IDisposable
     private PopupTarget? Target(BoundTable b, HudPanelWindow panel, string? popupPage)
     {
         if (panel.PlayerId == 0 || popupPage == null) return null;
-        var profile = Profile(b.Kind);
+        var profile = Profile(b);
         if (profile.Page(popupPage) == null) return null;
         return new PopupTarget
         {

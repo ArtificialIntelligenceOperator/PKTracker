@@ -16,12 +16,13 @@ public sealed partial class WpnHandParser : IHandHistoryParser
     public const int AmountScale = 2;
 
     public string RoomCode { get; }
+    public HandBoundary Boundary { get; } = new(["Hand #", "Game Hand #"], "*** SUMMARY ***");
 
     public WpnHandParser(string roomCode = "POKERKING") => RoomCode = roomCode;
 
     public bool CanParse(ReadOnlySpan<char> fileHead)
     {
-        var s = fileHead.TrimStart();
+        var s = fileHead.TrimStart('\uFEFF').TrimStart();
         return (s.StartsWith("Hand #") || s.StartsWith("Game Hand #")) && s.IndexOf(" UTC") > 0;
     }
 

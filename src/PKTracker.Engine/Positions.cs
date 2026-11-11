@@ -101,3 +101,41 @@ public static class Positions
         };
     }
 }
+
+/// <summary>
+/// Перевод позиций PKTracker в обозначения Hand2Note. Считаем по расстоянию от кнопки:
+/// так одинаково ведут себя столы 7, 8 и 9 игроков, а в 6-max первая позиция называется «MP».
+/// </summary>
+public static class HandPositions
+{
+    /// <summary>Расстояние от кнопки для не-блайндов: 0 — BTN, 1 — CO, 2 — HJ, … ; -1 — блайнд или нет позиции.</summary>
+    public static int DistanceFromButton(Position p, int playersDealt)
+    {
+        int nonBlind = Math.Max(0, playersDealt - 2);
+        return p switch
+        {
+            Position.BTN => 0,
+            Position.CO => 1,
+            Position.HJ => 2,
+            Position.LJ => 3,
+            Position.MP => 4,
+            Position.UTG1 => nonBlind >= 7 ? 5 : 4,
+            Position.UTG => nonBlind - 1,
+            _ => -1,
+        };
+    }
+
+    public static string H2n(Position p, int playersDealt)
+    {
+        if (p == Position.SB) return "SB";
+        if (p == Position.BB) return "BB";
+        if (p == Position.None) return "";
+        if (p == Position.BTN) return "BTN";
+        if (p == Position.CO) return "CO";
+        if (p == Position.HJ) return "HJ";
+        // В full ring «UTG» — только первое место; второе и дальше до HJ — «MP» (сверено с RFI по позициям
+        // в попапах Hand2Note: так сходятся и UTG, и MP одновременно). Первое место ринга — всегда Position.UTG,
+        // поэтому число сданных здесь не нужно: за столом без малого блайнда оно на единицу врёт.
+        return playersDealt >= 7 && p == Position.UTG ? "UTG" : "MP";
+    }
+}

@@ -15,6 +15,8 @@ public sealed class CellStyle
     /// <summary>left / center / right; по умолчанию — center для значений, left для подписей.</summary>
     public string? Align { get; init; }
     public double? FontSize { get; init; }
+    /// <summary>Рамка ячейки «#RRGGBB» — например, голубой рамкой помечают ячейки, открывающие попап.</summary>
+    public string? Border { get; init; }
 }
 
 /// <summary>
@@ -71,6 +73,13 @@ public sealed class HudPage
     public double FontSize { get; init; } = 11;
     /// <summary>Фон страницы; null — тема приложения.</summary>
     public string? Bg { get; init; }
+    /// <summary>
+    /// Группа вкладок попапа (вертикальный список слева: «Raiser», «vRaiser», «RvBB»…). Вкладки одной группы
+    /// показываются верхней полосой. null — общая группа: так выглядят старые профили без групп.
+    /// </summary>
+    public string? Group { get; init; }
+    /// <summary>Подсказка к вкладке: что именно на ней посчитано (условия, стеки, формат).</summary>
+    public string? Note { get; init; }
 
     [JsonIgnore] public int Rows => Cells.Count == 0 ? 0 : Cells.Max(c => c.Row + c.RowSpan);
     [JsonIgnore] public int Cols => Cells.Count == 0 ? 0 : Cells.Max(c => c.Col + c.ColSpan);
@@ -87,16 +96,30 @@ public sealed class HudProfile
     public string GameKind { get; init; } = "mtt";
     /// <summary>Панель, висящая над местом игрока.</summary>
     public required HudPage Panel { get; init; }
+    /// <summary>
+    /// Дополнительные вкладки самой панели (P / B / C / V…): над столом видна одна, переключается
+    /// буквами сбоку. Пусто — панель из одной страницы <see cref="Panel"/>, как раньше.
+    /// Переключение только ручное: «динамический» HUD, который сам меняет статы по ходу раздачи,
+    /// запрещён правилами части румов (iPoker, Winamax).
+    /// </summary>
+    public List<HudPage> PanelTabs { get; init; } = new();
     /// <summary>Вкладки попапа в порядке отображения.</summary>
     public List<HudPage> Pages { get; init; } = new();
     /// <summary>Версия формата — на будущее, если модель придётся менять несовместимо.</summary>
     public int Version { get; init; } = 1;
 
-    public HudPage? Page(string name) => Pages.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+    public HudPage? Page(string name) => Pages.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+        ?? Pages.FirstOrDefault(p => string.Equals(PageKey(p), name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Полное имя вкладки «группа/вкладка» — так на неё ссылается ячейка панели, если имена в группах повторяются.</summary>
+    public static string PageKey(HudPage p) => p.Group == null ? p.Name : p.Group + "/" + p.Name;
+
+    /// <summary>Страницы панели: основная и вкладки P/B/C/V.</summary>
+    public IEnumerable<HudPage> AllPanelPages() => PanelTabs.Count > 0 ? PanelTabs : new[] { Panel };
 
     /// <summary>Все коды статов, которые встречаются в профиле.</summary>
     public IEnumerable<string> StatCodes() =>
-        Pages.Prepend(Panel).SelectMany(p => p.Cells).Select(c => c.Stat).Where(s => s != null).Select(s => s!).Distinct();
+        Pages.Concat(AllPanelPages()).Prepend(Panel).SelectMany(p => p.Cells).Select(c => c.Stat).Where(s => s != null).Select(s => s!).Distinct();
 
     /// <summary>
     /// Профиль из старого плоского списка кодов («vpip,pfr,|,three_bet»). Вкладок у него нет,
@@ -128,4 +151,27 @@ public sealed class HudProfile
 
     public string ToJson() => JsonSerializer.Serialize(this, Json);
     public static HudProfile FromJson(string json) => JsonSerializer.Deserialize<HudProfile>(json, Json)!;
+}
+
+/// <summary>
+/// Пакет HUD: профиль вместе со статами, на которые он ссылается. Позволяет перенести свою раскладку
+/// одним файлом (между машинами, от другого игрока) — без ручного заведения сотни определений.
+/// Хранится в папке пользователя, а не в репозитории: раскладки и статы — личные материалы.
+/// </summary>
+public sealed class HudPackage
+{
+    public string? Name { get; init; }
+    public required HudProfile Profile { get; init; }
+    public List<StatDefinition> Stats { get; init; } = new();
+
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
+
+    public string ToJson() => JsonSerializer.Serialize(this, Json);
+    public static HudPackage FromJson(string json) => JsonSerializer.Deserialize<HudPackage>(json, Json)!;
 }

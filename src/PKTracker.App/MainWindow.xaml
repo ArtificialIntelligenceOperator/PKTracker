@@ -243,6 +243,11 @@
             </TabItem>
 
             <!-- ── Раздачи ─────────────────────────────────────────── -->
+            <!-- ── Аналитика: стартовые руки, сила руки, графики ───── -->
+            <TabItem Header="Аналитика" x:Name="AnalyticsTab">
+                <views:AnalyticsView x:Name="Analytics" />
+            </TabItem>
+
             <TabItem Header="Раздачи" x:Name="HandsTab">
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
@@ -285,7 +290,7 @@
             <TabItem Header="Игроки" x:Name="PlayersTab">
                 <Grid>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="300" />
+                        <ColumnDefinition Width="430" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <DockPanel Margin="0,0,8,0">
@@ -293,10 +298,20 @@
                             <Button DockPanel.Dock="Right" Style="{StaticResource AccentButton}" Content="Найти" Click="PlayerSearch_Click" Margin="6,0,0,0" />
                             <TextBox x:Name="PlayerSearchBox" KeyDown="PlayerSearchBox_KeyDown" />
                         </DockPanel>
-                        <DataGrid x:Name="PlayersGrid" SelectionChanged="PlayersGrid_SelectionChanged">
+                        <DataGrid x:Name="PlayersGrid" SelectionChanged="PlayersGrid_SelectionChanged" MouseRightButtonUp="PlayersGrid_RightClick"
+                                  ToolTip="Правый клик — цветовая метка, подпись, заметка">
                             <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="" Width="18">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Ellipse Width="10" Height="10" Fill="{Binding MarkerColor}" ToolTip="{Binding MarkerTitle}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Ник" Binding="{Binding Nickname}" Width="*" />
                                 <DataGridTextColumn Header="Руки" Binding="{Binding Hands}" />
+                                <DataGridTextColumn Header="Тип" Binding="{Binding MarkerTitle}" />
+                                <DataGridTextColumn Header="Подпись" Binding="{Binding Caption}" />
                             </DataGrid.Columns>
                         </DataGrid>
                     </DockPanel>
@@ -369,6 +384,10 @@
                 <DockPanel>
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
                         <CheckBox x:Name="HudEnabledBox" Content="HUD включён" VerticalAlignment="Center" Click="HudEnabled_Click" Margin="0,0,12,0" />
+                        <CheckBox x:Name="SessionWidgetBox" Content="Виджет сессии" VerticalAlignment="Center" Click="SessionWidget_Click" Margin="0,0,12,0"
+                                  ToolTip="Маленькое окно поверх столов: сколько сыграно в этой сессии, итог в bb и график. Только по завершённым раздачам." />
+                        <CheckBox x:Name="AutoProfileBox" Content="9max / 6max по столу" VerticalAlignment="Center" Click="AutoProfile_Click" Margin="0,0,12,0"
+                                  ToolTip="Если выбрана раскладка с «9max» в имени и сохранена парная «6max» (или наоборот), для каждого стола берётся подходящая по числу мест." />
                         <Button Content="Обновить" Click="HudRefresh_Click" />
                         <Button Content="Привязать выбранное окно к выбранному столу" Click="HudBind_Click" />
                     </StackPanel>
@@ -377,6 +396,12 @@
                         <ComboBox x:Name="HudProfileBox" Width="200" SelectionChanged="HudProfileBox_Changed" />
                         <Button Style="{StaticResource AccentButton}" Content="Редактор HUD и попапов"
                                 Click="HudEditor_Click" Margin="8,0,0,0" />
+                        <Button Content="Привязка попапов…" Click="PopupBinding_Click" Margin="6,0,0,0"
+                                ToolTip="Какую вкладку попапа открывает каждая ячейка панели HUD" />
+                        <Button Content="Импорт пакета HUD…" Click="HudPackageImport_Click" Margin="6,0,0,0"
+                                ToolTip="Файл *.hudpack.json: раскладка вместе со статами. Статы добавятся в базу и досчитаются" />
+                        <Button Content="Цветовые метки…" Click="Markers_Click" Margin="6,0,0,0"
+                                ToolTip="Типы оппонентов и их цвета: метка ставится правым кликом по панели HUD или во вкладке «Игроки»" />
                     </StackPanel>
                     <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Style="{StaticResource Dim}" Margin="0,0,0,6"
                                Text="Окна клиента ищутся по имени процесса и классу окна (Настройки). Привязка: .data-канал → заголовок окна + последняя раздача стола из HH → ручная привязка. Статы строятся только по вашим раздачам (правила рума)." />
@@ -414,7 +439,7 @@
                                 </StackPanel>
                                 <DockPanel Grid.Column="4" Margin="8,0,0,0">
                                     <TextBlock DockPanel.Dock="Top" Text="Предпросмотр панели" Style="{StaticResource Dim}" Margin="0,0,0,4" />
-                                    <Border Background="#1E1712" BorderBrush="#6E4A2C" BorderThickness="1" CornerRadius="4" Padding="6,4" VerticalAlignment="Top">
+                                    <Border Background="#1A1930" BorderBrush="#453F86" BorderThickness="1" CornerRadius="4" Padding="6,4" VerticalAlignment="Top">
                                         <StackPanel x:Name="ProfilePreview" />
                                     </Border>
                                 </DockPanel>
@@ -559,13 +584,11 @@
                                 <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
-                            <TextBlock Grid.Row="0" Text="Рум (скин WPN)" Margin="0,4" />
-                            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="SetRoom" Margin="0,2" Width="180" HorizontalAlignment="Left">
-                                <ComboBoxItem Content="POKERKING" />
-                                <ComboBoxItem Content="ACR" />
-                                <ComboBoxItem Content="BLACKCHIP" />
-                                <ComboBoxItem Content="TRUEPOKER" />
-                            </ComboBox>
+                            <TextBlock Grid.Row="0" Text="Рум" Margin="0,4" />
+                            <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal">
+                                <ComboBox x:Name="SetRoom" Margin="0,2" Width="180" HorizontalAlignment="Left" SelectionChanged="SetRoom_Changed" />
+                                <TextBlock x:Name="SetRoomRules" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="620" Style="{StaticResource Dim}" />
+                            </StackPanel>
                             <TextBlock Grid.Row="1" Text="Строка подключения" Margin="0,4" />
                             <TextBox Grid.Row="1" Grid.Column="1" x:Name="SetConn" Margin="0,2" />
                             <TextBlock Grid.Row="2" Text="Папка HH (авто-импорт)" Margin="0,4" />
@@ -600,6 +623,10 @@
                                 <TextBox x:Name="SetHoverHide" Width="50" Margin="0,2" />
                                 <TextBlock Text="HUD вкл/выкл:" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="16,0,6,0" />
                                 <TextBox x:Name="SetHotkey" Width="90" Margin="0,2" />
+                                <TextBlock Text="выборка мелко, если &lt;" Style="{StaticResource Dim}" VerticalAlignment="Center" Margin="16,0,6,0"
+                                           ToolTip="«50₂» — значение и мелкая цифра выборки, если раздач меньше указанного; 0 — не показывать" />
+                                <TextBox x:Name="SetSampleBelow" Width="40" Margin="0,2" />
+                                <CheckBox x:Name="SetCap99" Content="99 вместо 100" VerticalAlignment="Center" Margin="10,0,0,0" />
                             </StackPanel>
                             <TextBlock Grid.Row="12" Text="Разрыв сессии, мин" Margin="0,4" />
                             <StackPanel Grid.Row="12" Grid.Column="1" Orientation="Horizontal">

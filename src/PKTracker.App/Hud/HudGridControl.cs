@@ -15,7 +15,7 @@ namespace PKTracker.App.Hud;
 /// </summary>
 public sealed class HudGridControl : Grid
 {
-    private static readonly Brush DefaultFg = new SolidColorBrush(Color.FromRgb(0xEF, 0xE6, 0xDA));
+    private static readonly Brush DefaultFg = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8));
     private static readonly Brush GridLine = new SolidColorBrush(Color.FromArgb(0x50, 0x80, 0x80, 0x80));
     private static readonly Brush SelectionBrush = new SolidColorBrush(Color.FromRgb(0x4F, 0xC3, 0xF7));
     private static readonly Brush EmptyCellBrush = new SolidColorBrush(Color.FromArgb(0x18, 0xFF, 0xFF, 0xFF));
@@ -30,6 +30,11 @@ public sealed class HudGridControl : Grid
     public bool ShowGridLines2 { get; set; }
     public IReadOnlyDictionary<string, CompiledStat> Stats { get; set; } = new Dictionary<string, CompiledStat>();
     public bool ShowTooltips { get; set; } = true;
+    /// <summary>Начертание значений, если у ячейки не задан «жирный»: на панели над столом — полужирное, цифры читаются с ходу.</summary>
+    public FontWeight CellWeight { get; set; } = FontWeights.Normal;
+
+    /// <summary>Цвет рамки по клетке сетки — чтобы соседние ячейки с одной рамкой обводились общим контуром.</summary>
+    private readonly Dictionary<(int Row, int Col), string> _frames = new();
 
     /// <summary>Индекс ячейки в <see cref="HudPage.Cells"/>; -1 — кликнули по пустому месту.</summary>
     public event Action<int, int, int>? CellClicked;
@@ -54,6 +59,13 @@ public sealed class HudGridControl : Grid
 
     private void ApplyBorder(Border b, bool selected)
     {
+        // Собственная рамка ячейки (стиль) видна всегда, кроме момента выделения в редакторе.
+        if (!selected && b.Tag is (Brush own, Thickness sides))
+        {
+            b.BorderBrush = own;
+            b.BorderThickness = sides;
+            return;
+        }
         b.BorderBrush = selected ? SelectionBrush : (ShowGridLines2 ? GridLine : Brushes.Transparent);
         b.BorderThickness = new Thickness(selected ? 2 : (ShowGridLines2 ? 0.5 : 0));
     }
@@ -83,6 +95,13 @@ public sealed class HudGridControl : Grid
             for (int r = 0; r < rows; r++)
                 for (int c = 0; c < cols; c++)
                     AddPlaceholder(r, c);
+
+        _frames.Clear();
+        foreach (var c in page.Cells)
+            if (!string.IsNullOrWhiteSpace(c.Style?.Border))
+                for (int dr = 0; dr < Math.Max(1, c.RowSpan); dr++)
+                    for (int dc = 0; dc < Math.Max(1, c.ColSpan); dc++)
+                        _frames[(c.Row + dr, c.Col + dc)] = c.Style!.Border!;
 
         for (int i = 0; i < page.Cells.Count; i++)
             AddCell(i, page.Cells[i], values != null && i < values.Length ? values[i] : CellValue.Empty, page);
@@ -115,9 +134,8 @@ public sealed class HudGridControl : Grid
 
         var text = new TextBlock
         {
-            Text = r.Text,
             Foreground = Brush(r.Fg) ?? DefaultFg,
-            FontWeight = r.Bold ? FontWeights.Bold : FontWeights.Normal,
+            FontWeight = r.Bold ? FontWeights.Bold : CellWeight,
             VerticalAlignment = VerticalAlignment.Center,
             TextAlignment = r.Align switch { "right" => TextAlignment.Right, "left" => TextAlignment.Left, _ => TextAlignment.Center },
             HorizontalAlignment = r.Align switch
@@ -131,6 +149,13 @@ public sealed class HudGridControl : Grid
         };
         if (r.FontSize is { } fs) text.FontSize = fs;
         else text.FontSize = page.FontSize;
+        text.Inlines.Add(new System.Windows.Documents.Run(r.Text));
+        // Малая выборка — мелкой цифрой справа внизу, как в Hand2Note: «50₂» читается быстрее, чем «50 (2)».
+        if (r.SmallSample is { } n)
+            text.Inlines.Add(new System.Windows.Documents.Run(n.ToString())
+            {
+                FontSize = Math.Max(7, text.FontSize * 0.7), BaselineAlignment = BaselineAlignment.Subscript,
+            });
 
         var border = new Border
         {
@@ -140,6 +165,17 @@ public sealed class HudGridControl : Grid
             Cursor = cell.IsLabel ? Cursors.Arrow : Cursors.Hand,
             ToolTip = ShowTooltips && r.Tooltip.Length > 0 ? r.Tooltip : null,
         };
+        // Рамка рисуется только по внешнему краю группы: у соседа тот же цвет — общей стороны нет.
+        // Так несколько ячеек одного блока обведены одним прямоугольником, а не каждая своим.
+        if (Brush(r.Border) is { } frame && cell.Style?.Border is { } key)
+        {
+            int r2 = cell.Row + Math.Max(1, cell.RowSpan) - 1, c2 = cell.Col + Math.Max(1, cell.ColSpan) - 1;
+            bool Same(int row, int col) => _frames.TryGetValue((row, col), out var other) && other == key;
+            border.Tag = (frame, new Thickness(
+                Same(cell.Row, cell.Col - 1) ? 0 : 1, Same(cell.Row - 1, cell.Col) ? 0 : 1,
+                Same(cell.Row, c2 + 1) ? 0 : 1, Same(r2 + 1, cell.Col) ? 0 : 1));
+            border.Margin = new Thickness(0);
+        }
         ApplyBorder(border, false);
         SetRow(border, cell.Row);
         SetColumn(border, cell.Col);

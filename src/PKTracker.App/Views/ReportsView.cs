@@ -154,6 +154,7 @@ public sealed class ReportsView : UserControl
     private static TabControl Tabs() => new()
     {
         Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0, 6, 0, 0),
+        ItemContainerStyle = (Style)Application.Current.FindResource("SubTab"),
     };
 
     private static TabItem Tab(TabControl host, string header, UIElement content)
@@ -249,10 +250,10 @@ public sealed class ReportsView : UserControl
                 if (!points[i].Showdown) c += points[i].NetBbX100 / 100.0;
                 net[i] = a; ev[i] = b; nonSd[i] = c;
             }
-            var s1 = plot.Add.Signal(net); s1.LegendText = "Выигрыш, bb"; s1.LineWidth = 2.5f; s1.Color = ScottPlot.Color.FromHex("#E3A45A");
-            var s2 = plot.Add.Signal(ev); s2.LegendText = "EV, bb"; s2.LineWidth = 2; s2.Color = ScottPlot.Color.FromHex("#8CC084");
-            var s3 = plot.Add.Signal(nonSd); s3.LegendText = "Без шоудауна, bb"; s3.LineWidth = 1.5f; s3.Color = ScottPlot.Color.FromHex("#D9674E");
-            var zero = plot.Add.HorizontalLine(0); zero.Color = ScottPlot.Color.FromHex("#5A4A3E"); zero.LinePattern = ScottPlot.LinePattern.Dashed;
+            var s1 = plot.Add.Signal(net); s1.LegendText = "Выигрыш, bb"; s1.LineWidth = 2.5f; s1.Color = ScottPlot.Color.FromHex("#9C92F8");
+            var s2 = plot.Add.Signal(ev); s2.LegendText = "EV, bb"; s2.LineWidth = 2; s2.Color = ScottPlot.Color.FromHex("#3ECF8E");
+            var s3 = plot.Add.Signal(nonSd); s3.LegendText = "Без шоудауна, bb"; s3.LineWidth = 1.5f; s3.Color = ScottPlot.Color.FromHex("#F0708C");
+            var zero = plot.Add.HorizontalLine(0); zero.Color = ScottPlot.Color.FromHex("#524F7A"); zero.LinePattern = ScottPlot.LinePattern.Dashed;
             plot.ShowLegend();
             plot.Axes.Bottom.Label.Text = "Раздачи";
             plot.Axes.Left.Label.Text = "bb";

@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using Npgsql;
 using PKTracker.Core.Model;
-using PKTracker.Parsers.Wpn;
+using PKTracker.Parsers;
 using PKTracker.Tournaments;
 
 namespace PKTracker.Data.Import;
@@ -18,14 +18,12 @@ public sealed class FileImporter
 {
     private readonly TrackerDb _db;
     private readonly HandImporter _hands;
-    private readonly WpnHandParser _parser;
     public int BatchSize { get; init; } = 5000;
 
     public FileImporter(TrackerDb db, HandImporter hands)
     {
         _db = db;
         _hands = hands;
-        _parser = new WpnHandParser(db.RoomCode);
     }
 
     /// <summary>Читает файл, который клиент может держать открытым (§15.1).</summary>
@@ -40,8 +38,10 @@ public sealed class FileImporter
 
     public async Task<ImportReport> ImportFolderAsync(string folder, IProgress<ImportProgress>? progress = null, CancellationToken ct = default)
     {
-        var hh = Directory.EnumerateFiles(folder, "*.txt", SearchOption.AllDirectories)
-            .Where(f => Path.GetFileName(f).StartsWith("HH", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f).ToList();
+        // Формат определяется по содержимому файла, а не по имени: у румов разные соглашения об именах,
+        // а файлы, которые не похожи ни на один формат, просто пропускаются при разборе.
+        var hh = Directory.EnumerateFiles(folder, "*.*", SearchOption.AllDirectories)
+            .Where(ParserRegistry.LooksLikeHistoryFile).OrderBy(f => f).ToList();
         var ots = Directory.EnumerateFiles(folder, "*.ots", SearchOption.AllDirectories).OrderBy(f => f).ToList();
         return await ImportFilesAsync(hh, ots, progress, ct);
     }
@@ -96,9 +96,20 @@ public sealed class FileImporter
 
             // Файл может дописываться клиентом прямо сейчас — берём только завершённые раздачи (§15.8).
             bool quiet = DateTime.UtcNow - File.GetLastWriteTimeUtc(file) >= TimeSpan.FromSeconds(1);
-            int complete = CompleteHands.CompleteLength(bytes, quiet);
+            // Формат — по началу файла: от него зависит, как искать конец последней раздачи.
+            var head = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, 4096));
+            var detected = ParserRegistry.Detect(head, _db.RoomCode);
+            if (detected == null) { filesDone++; continue; } // не история раздач (итоги турниров, логи клиента)
+            int complete = CompleteHands.CompleteLength(bytes, quiet, detected.Value.Parser.Boundary);
             var text = Encoding.UTF8.GetString(bytes, 0, complete);
-            var results = _parser.Parse(text, WpnFileNameParser.ToSource(file)).ToList();
+            if (!ParserRegistry.SameNetwork(detected.Value.Room, _db.RoomCode))
+            {
+                rejected++;
+                messages.Add($"Пропущен (формат {detected.Value.Room.Title}, активный рум — {_db.RoomCode}; смените рум в настройках): {Path.GetFileName(file)}");
+                filesDone++;
+                continue;
+            }
+            var results = detected.Value.Parser.Parse(text, ParserRegistry.SourceFor(file)).ToList();
             hands += results.Count;
 
             // Защита от импорта чужого архива: файл без Hero ни в одной раздаче отклоняется целиком (§6.1).

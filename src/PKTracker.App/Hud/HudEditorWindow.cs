@@ -27,9 +27,33 @@ public sealed class HudEditorWindow : Window
     private readonly TextBlock _status = new() { Margin = new Thickness(8, 4, 8, 4), Opacity = 0.75 };
     private readonly ComboBox _profileBox = new();
 
-    private HudPage CurrentPage => _pageList.SelectedIndex == 0
-        ? _profile.Panel
-        : _profile.Pages[Math.Max(0, _pageList.SelectedIndex - 1)];
+    /// <summary>Сколько строк списка занимают страницы панели: одна или вкладки P/B/C/V.</summary>
+    private int PanelCount => Math.Max(1, _profile.PanelTabs.Count);
+    private bool PanelSelected => _pageList.SelectedIndex >= 0 && _pageList.SelectedIndex < PanelCount;
+
+    private HudPage CurrentPage => PanelSelected
+        ? (_profile.PanelTabs.Count > 0 ? _profile.PanelTabs[_pageList.SelectedIndex] : _profile.Panel)
+        : _profile.Pages[Math.Max(0, _pageList.SelectedIndex - PanelCount)];
+
+    /// <summary>Подменить текущую страницу (страницы неизменяемы по свойствам сетки — заменяются целиком).</summary>
+    private void ReplaceCurrentPage(HudPage fresh)
+    {
+        if (PanelSelected)
+        {
+            if (_profile.PanelTabs.Count > 0)
+            {
+                _profile.PanelTabs[_pageList.SelectedIndex] = fresh;
+                if (_pageList.SelectedIndex == 0) _profile = WithPanel(_profile, fresh);
+            }
+            else _profile = WithPanel(_profile, fresh);
+        }
+        else _profile.Pages[_pageList.SelectedIndex - PanelCount] = fresh;
+    }
+
+    private static HudProfile WithPanel(HudProfile p, HudPage panel) => new()
+    {
+        Name = p.Name, GameKind = p.GameKind, Panel = panel, PanelTabs = p.PanelTabs, Pages = p.Pages, Version = p.Version,
+    };
 
     /// <summary>Текущая ячейка; null — выбрано пустое место (координаты в <see cref="_newCell"/>).</summary>
     private HudCell? _selected;
@@ -45,8 +69,9 @@ public sealed class HudEditorWindow : Window
         Title = "Редактор HUD и попапов";
         Width = 1280;
         Height = 820;
-        Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
-        Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
+        Background = new SolidColorBrush(Color.FromRgb(0x15, 0x14, 0x24));
+        Infrastructure.Win32.ApplyDarkFrame(this);
+        Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8));
         FontFamily = new FontFamily("Segoe UI");
 
         _grid.EditMode = true;
@@ -85,8 +110,8 @@ public sealed class HudEditorWindow : Window
         root.Children.Add(_status);
 
         _pageList.Width = 160;
-        _pageList.Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25));
-        _pageList.Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
+        _pageList.Background = new SolidColorBrush(Color.FromRgb(0x1D, 0x1C, 0x30));
+        _pageList.Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8));
         _pageList.BorderThickness = new Thickness(0);
         _pageList.SelectionChanged += (_, _) => RenderPage();
         DockPanel.SetDock(_pageList, Dock.Left);
@@ -97,7 +122,7 @@ public sealed class HudEditorWindow : Window
             Width = 300,
             Content = _props,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x25)),
+            Background = new SolidColorBrush(Color.FromRgb(0x1D, 0x1C, 0x30)),
             Padding = new Thickness(8),
         };
         DockPanel.SetDock(propScroll, Dock.Right);
@@ -116,7 +141,7 @@ public sealed class HudEditorWindow : Window
     private static TextBlock Label(string text) => new()
     {
         Text = text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0),
-        Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+        Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
     };
 
     private static Button Button(string text, Action onClick)
@@ -153,8 +178,10 @@ public sealed class HudEditorWindow : Window
     {
         int keep = _pageList.SelectedIndex;
         _pageList.Items.Clear();
-        _pageList.Items.Add("▣ Панель");
-        foreach (var p in _profile.Pages) _pageList.Items.Add(p.Name);
+        if (_profile.PanelTabs.Count > 0)
+            foreach (var t in _profile.PanelTabs) _pageList.Items.Add("▣ Панель: " + t.Name);
+        else _pageList.Items.Add("▣ Панель");
+        foreach (var p in _profile.Pages) _pageList.Items.Add(HudProfile.PageKey(p));
         _pageList.SelectedIndex = Math.Clamp(keep, 0, _pageList.Items.Count - 1);
     }
 
@@ -167,19 +194,28 @@ public sealed class HudEditorWindow : Window
             _status.Text = "Вкладка с таким именем уже есть";
             return;
         }
-        _profile.Pages.Add(new HudPage { Name = name });
+        // «Группа/Вкладка» — вкладка попадёт в группу слева в попапе (как группы в Hand2Note).
+        int slash = name.IndexOf('/');
+        if (slash >= 0 && name[(slash + 1)..].Trim().Length == 0)
+        {
+            _status.Text = "После «Группа/» нужно имя вкладки";
+            return;
+        }
+        _profile.Pages.Add(slash > 0
+            ? new HudPage { Name = name[(slash + 1)..].Trim(), Group = name[..slash].Trim() }
+            : new HudPage { Name = name });
         ReloadPages();
-        _pageList.SelectedIndex = _profile.Pages.Count;
+        _pageList.SelectedIndex = PanelCount + _profile.Pages.Count - 1;
     }
 
     private void RemovePage()
     {
-        if (_pageList.SelectedIndex <= 0)
+        if (PanelSelected)
         {
             _status.Text = "Панель удалить нельзя — она есть всегда";
             return;
         }
-        int i = _pageList.SelectedIndex - 1;
+        int i = _pageList.SelectedIndex - PanelCount;
         if (MessageBox.Show($"Удалить вкладку «{_profile.Pages[i].Name}»?", "Редактор HUD",
                 MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         _profile.Pages.RemoveAt(i);
@@ -206,7 +242,8 @@ public sealed class HudEditorWindow : Window
         if (string.IsNullOrWhiteSpace(name)) return;
         _profile = new HudProfile
         {
-            Name = name, GameKind = _profile.GameKind, Panel = _profile.Panel, Pages = _profile.Pages, Version = _profile.Version,
+            Name = name, GameKind = _profile.GameKind, Panel = _profile.Panel, PanelTabs = _profile.PanelTabs,
+            Pages = _profile.Pages, Version = _profile.Version,
         };
         _store.Save(_profile);
         _status.Text = $"Сохранено: {name}. Выберите профиль в настройках HUD, чтобы он применился.";
@@ -283,7 +320,7 @@ public sealed class HudEditorWindow : Window
             {
                 Text = "Щёлкните по ячейке, чтобы её править, или по пустой клетке, чтобы добавить новую.",
                 TextWrapping = TextWrapping.Wrap, Opacity = 0.7, Margin = new Thickness(0, 4, 0, 0),
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
             });
             _props.Children.Add(Head("Страница"));
             _props.Children.Add(Field("Ширина колонки", CurrentPage.ColWidth.ToString("0.#"), v => SetPage(colWidth: Num(v))));
@@ -292,22 +329,38 @@ public sealed class HudEditorWindow : Window
             return;
         }
 
+        // Каждая правка заменяет объект ячейки новым (Replace), а поля панели свойств созданы один раз:
+        // они обращаются к текущей ячейке через Cur(), иначе вторая правка подряд молча терялась бы.
+        HudCell Cur() => _selected ?? cell;
         _props.Children.Add(Head($"Ячейка ({cell.Row}, {cell.Col})"));
-        _props.Children.Add(Field("Текст", cell.Text ?? "", v => Replace(cell, Clone(cell, text: Empty(v)))));
+        _props.Children.Add(Field("Текст", cell.Text ?? "", v => Replace(Cur(), Clone(Cur(), text: Empty(v)))));
         _props.Children.Add(StatPicker(cell));
-        _props.Children.Add(Field("Строка", cell.Row.ToString(), v => Replace(cell, Clone(cell, row: (int)(Num(v) ?? cell.Row)))));
-        _props.Children.Add(Field("Колонка", cell.Col.ToString(), v => Replace(cell, Clone(cell, col: (int)(Num(v) ?? cell.Col)))));
-        _props.Children.Add(Field("Объединить строк", cell.RowSpan.ToString(), v => Replace(cell, Clone(cell, rowSpan: (int)(Num(v) ?? 1)))));
-        _props.Children.Add(Field("Объединить колонок", cell.ColSpan.ToString(), v => Replace(cell, Clone(cell, colSpan: (int)(Num(v) ?? 1)))));
-        _props.Children.Add(Field("Фон #RRGGBB", cell.Style?.Bg ?? "", v => Replace(cell, Clone(cell, style: Style(cell, bg: Empty(v))))));
-        _props.Children.Add(Field("Цвет текста", cell.Style?.Fg ?? "", v => Replace(cell, Clone(cell, style: Style(cell, fg: Empty(v))))));
-        _props.Children.Add(Check("Жирный", cell.Style?.Bold ?? false, v => Replace(cell, Clone(cell, style: Style(cell, bold: v)))));
-        _props.Children.Add(Check("Показывать выборку (n)", cell.ShowSample, v => Replace(cell, Clone(cell, showSample: v))));
-        _props.Children.Add(Field("Знаков после запятой", cell.Decimals?.ToString() ?? "", v => Replace(cell, Clone(cell, decimals: (int?)Num(v)))));
-        _props.Children.Add(Field("Мин. выборка", cell.MinSample?.ToString() ?? "", v => Replace(cell, Clone(cell, minSample: (int?)Num(v)))));
-        if (_pageList.SelectedIndex == 0)
+        _props.Children.Add(Field("Строка", cell.Row.ToString(), v => Replace(Cur(), Clone(Cur(), row: (int)(Num(v) ?? Cur().Row)))));
+        _props.Children.Add(Field("Колонка", cell.Col.ToString(), v => Replace(Cur(), Clone(Cur(), col: (int)(Num(v) ?? Cur().Col)))));
+        _props.Children.Add(Field("Объединить строк", cell.RowSpan.ToString(), v => Replace(Cur(), Clone(Cur(), rowSpan: (int)(Num(v) ?? 1)))));
+        _props.Children.Add(Field("Объединить колонок", cell.ColSpan.ToString(), v => Replace(Cur(), Clone(Cur(), colSpan: (int)(Num(v) ?? 1)))));
+        _props.Children.Add(Field("Фон #RRGGBB", cell.Style?.Bg ?? "", v => Replace(Cur(), Clone(Cur(), style: Style(Cur(), bg: Empty(v))))));
+        _props.Children.Add(Field("Цвет текста", cell.Style?.Fg ?? "", v => Replace(Cur(), Clone(Cur(), style: Style(Cur(), fg: Empty(v))))));
+        _props.Children.Add(Check("Жирный", cell.Style?.Bold ?? false, v => Replace(Cur(), Clone(Cur(), style: Style(Cur(), bold: v)))));
+        _props.Children.Add(Field("Рамка #RRGGBB", cell.Style?.Border ?? "", v => Replace(Cur(), Clone(Cur(), style: StyleBorder(Cur(), Empty(v))))));
+        _props.Children.Add(Check("Показывать выборку (n)", cell.ShowSample, v => Replace(Cur(), Clone(Cur(), showSample: v))));
+        _props.Children.Add(Field("Знаков после запятой", cell.Decimals?.ToString() ?? "", v => Replace(Cur(), Clone(Cur(), decimals: (int?)Num(v)))));
+        _props.Children.Add(Field("Мин. выборка", cell.MinSample?.ToString() ?? "", v => Replace(Cur(), Clone(Cur(), minSample: (int?)Num(v)))));
+        if (PanelSelected)
         {
-            _props.Children.Add(Field("Открывать вкладку", cell.Popup ?? "", v => Replace(cell, Clone(cell, popup: Empty(v)))));
+            // Привязка — выбором из списка вкладок попапа: опечатка в имени тихо отвязала бы ячейку.
+            _props.Children.Add(Label("Открывать вкладку"));
+            var box = new ComboBox { Margin = new Thickness(0, 0, 0, 6), IsEditable = false };
+            box.Items.Add("(нет)");
+            foreach (var pg in _profile.Pages) box.Items.Add(HudProfile.PageKey(pg));
+            box.SelectedItem = cell.Popup != null && _profile.Page(cell.Popup) is { } bound ? HudProfile.PageKey(bound) : "(нет)";
+            box.SelectionChanged += (_, _) =>
+            {
+                var v = box.SelectedItem as string;
+                var fresh = Clone(Cur(), popup: v == "(нет)" ? "" : v);
+                Replace(Cur(), v == "(нет)" ? ClearPopup(fresh) : fresh);
+            };
+            _props.Children.Add(box);
             // Правило панели: без привязанной вкладки ячейка за столом не реагирует ни на клик,
             // ни на наведение. Пустое поле здесь выглядит как «ещё не заполнил», поэтому говорим прямо.
             _props.Children.Add(new TextBlock
@@ -322,26 +375,26 @@ public sealed class HudEditorWindow : Window
 
         _props.Children.Add(Head("Фильтр"));
         var f = cell.Filter ?? new CellFilter();
-        _props.Children.Add(Field("Позиции (через запятую)", Join(f.Pos), v => SetFilter(cell, pos: Split(v))));
-        _props.Children.Add(Field("Против позиций", Join(f.VsPos), v => SetFilter(cell, vs: Split(v))));
-        _props.Children.Add(Field("Позиция опенрейзера", Join(f.OpenPos), v => SetFilter(cell, open: Split(v))));
-        _props.Children.Add(Field("Игроков за столом от", f.PlayersMin?.ToString() ?? "", v => SetFilter(cell, pMin: (int?)Num(v))));
-        _props.Children.Add(Field("Игроков за столом до", f.PlayersMax?.ToString() ?? "", v => SetFilter(cell, pMax: (int?)Num(v))));
-        _props.Children.Add(Field("Игроков в раздаче от", f.InHandMin?.ToString() ?? "", v => SetFilter(cell, hMin: (int?)Num(v))));
-        _props.Children.Add(Field("Игроков в раздаче до", f.InHandMax?.ToString() ?? "", v => SetFilter(cell, hMax: (int?)Num(v))));
-        _props.Children.Add(Field("Стек от, bb", f.StackMin?.ToString() ?? "", v => SetFilter(cell, sMin: Num(v))));
-        _props.Children.Add(Field("Стек до, bb", f.StackMax?.ToString() ?? "", v => SetFilter(cell, sMax: Num(v))));
-        _props.Children.Add(Tri("Олл-ин", f.AllIn, v => SetFilter(cell, allIn: v)));
-        _props.Children.Add(Tri("Анте", f.Ante, v => SetFilter(cell, ante: v)));
-        _props.Children.Add(Field("Условие (язык статов)", f.Where ?? "", v => SetFilter(cell, where: Empty(v))));
+        _props.Children.Add(Field("Позиции (через запятую)", Join(f.Pos), v => SetFilter(Cur(), pos: Split(v))));
+        _props.Children.Add(Field("Против позиций", Join(f.VsPos), v => SetFilter(Cur(), vs: Split(v))));
+        _props.Children.Add(Field("Позиция опенрейзера", Join(f.OpenPos), v => SetFilter(Cur(), open: Split(v))));
+        _props.Children.Add(Field("Игроков за столом от", f.PlayersMin?.ToString() ?? "", v => SetFilter(Cur(), pMin: (int?)Num(v))));
+        _props.Children.Add(Field("Игроков за столом до", f.PlayersMax?.ToString() ?? "", v => SetFilter(Cur(), pMax: (int?)Num(v))));
+        _props.Children.Add(Field("Игроков в раздаче от", f.InHandMin?.ToString() ?? "", v => SetFilter(Cur(), hMin: (int?)Num(v))));
+        _props.Children.Add(Field("Игроков в раздаче до", f.InHandMax?.ToString() ?? "", v => SetFilter(Cur(), hMax: (int?)Num(v))));
+        _props.Children.Add(Field("Стек от, bb", f.StackMin?.ToString() ?? "", v => SetFilter(Cur(), sMin: Num(v))));
+        _props.Children.Add(Field("Стек до, bb", f.StackMax?.ToString() ?? "", v => SetFilter(Cur(), sMax: Num(v))));
+        _props.Children.Add(Tri("Олл-ин", f.AllIn, v => SetFilter(Cur(), allIn: v)));
+        _props.Children.Add(Tri("Анте", f.Ante, v => SetFilter(Cur(), ante: v)));
+        _props.Children.Add(Field("Условие (язык статов)", f.Where ?? "", v => SetFilter(Cur(), where: Empty(v))));
 
-        if (_pageList.SelectedIndex == 0 && cell.Filter is { } cf && !cf.AggCompatible)
+        if (PanelSelected && cell.Filter is { } cf && !cf.AggCompatible)
             _props.Children.Add(Warn("Панель читает агрегаты: позиция оппонента, олл-ин, анте и произвольные "
                 + "условия там не работают. Для панели заведите отдельный стат или уберите эти поля."));
 
         _props.Children.Add(Button("Удалить ячейку", () =>
         {
-            CurrentPage.Cells.Remove(cell);
+            CurrentPage.Cells.Remove(Cur());
             RenderPage();
         }));
     }
@@ -364,11 +417,9 @@ public sealed class HudEditorWindow : Window
         var fresh = new HudPage
         {
             Name = p.Name, Cells = p.Cells, ColWidth = colWidth ?? p.ColWidth, RowHeight = rowHeight ?? p.RowHeight,
-            ColWidths = p.ColWidths, FontSize = fontSize ?? p.FontSize, Bg = p.Bg,
+            ColWidths = p.ColWidths, FontSize = fontSize ?? p.FontSize, Bg = p.Bg, Group = p.Group, Note = p.Note,
         };
-        if (_pageList.SelectedIndex == 0)
-            _profile = new HudProfile { Name = _profile.Name, GameKind = _profile.GameKind, Panel = fresh, Pages = _profile.Pages };
-        else _profile.Pages[_pageList.SelectedIndex - 1] = fresh;
+        ReplaceCurrentPage(fresh);
         _grid.Render(CurrentPage, null);
     }
 
@@ -400,10 +451,22 @@ public sealed class HudEditorWindow : Window
         ShowSample = showSample ?? c.ShowSample, Popup = popup ?? c.Popup,
     };
 
+    private static HudCell ClearPopup(HudCell c) => new()
+    {
+        Row = c.Row, Col = c.Col, RowSpan = c.RowSpan, ColSpan = c.ColSpan, Text = c.Text, Stat = c.Stat, Filter = c.Filter,
+        Colors = c.Colors, Style = c.Style, Decimals = c.Decimals, MinSample = c.MinSample, ShowSample = c.ShowSample, Popup = null,
+    };
+
     private static CellStyle Style(HudCell c, string? bg = null, string? fg = null, bool? bold = null) => new()
     {
         Bg = bg ?? c.Style?.Bg, Fg = fg ?? c.Style?.Fg, Bold = bold ?? c.Style?.Bold ?? false,
-        Align = c.Style?.Align, FontSize = c.Style?.FontSize,
+        Align = c.Style?.Align, FontSize = c.Style?.FontSize, Border = c.Style?.Border,
+    };
+
+    private static CellStyle StyleBorder(HudCell c, string? border) => new()
+    {
+        Bg = c.Style?.Bg, Fg = c.Style?.Fg, Bold = c.Style?.Bold ?? false, Align = c.Style?.Align, FontSize = c.Style?.FontSize,
+        Border = border,
     };
 
     // ── Мелкие элементы ──────────────────────────────────────────────────────
@@ -426,7 +489,7 @@ public sealed class HudEditorWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = label, FontSize = 11, Opacity = 0.75,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
         });
         var box = new TextBox { Text = value };
         // Правка применяется по потере фокуса и по Enter: на каждое нажатие клавиши
@@ -442,7 +505,7 @@ public sealed class HudEditorWindow : Window
         var cb = new CheckBox
         {
             Content = label, IsChecked = value, Margin = new Thickness(0, 6, 0, 0),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
         };
         cb.Checked += (_, _) => onChange(true);
         cb.Unchecked += (_, _) => onChange(false);
@@ -456,7 +519,7 @@ public sealed class HudEditorWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = label, FontSize = 11, Opacity = 0.75,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
         });
         var box = new ComboBox();
         box.Items.Add("не важно");
@@ -474,7 +537,7 @@ public sealed class HudEditorWindow : Window
         panel.Children.Add(new TextBlock
         {
             Text = "Стат (пусто — подпись)", FontSize = 11, Opacity = 0.75,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
         });
         var box = new ComboBox { IsEditable = true, Text = cell.Stat ?? "" };
         box.Items.Add("");
@@ -487,7 +550,7 @@ public sealed class HudEditorWindow : Window
             {
                 Text = st.Definition.Title + " — " + (st.Definition.Opportunity ?? st.Definition.Hit ?? ""),
                 TextWrapping = TextWrapping.Wrap, FontSize = 10, Opacity = 0.6, Margin = new Thickness(0, 2, 0, 0),
-                Foreground = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0xF1, 0xF0, 0xF8)),
             });
         return panel;
 

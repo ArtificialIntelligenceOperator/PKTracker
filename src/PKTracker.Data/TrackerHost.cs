@@ -37,6 +37,8 @@ public sealed class TrackerSettings
     public string? MttProfile { get; set; }
     /// <summary>Показывать панели HUD в реплеере.</summary>
     public bool ReplayerHud { get; set; } = true;
+    /// <summary>Реплеер показывает стеки, ставки и банк в больших блайндах, а не в фишках (переключатель «BB» в реплеере).</summary>
+    public bool ReplayerInBb { get; set; }
     /// <summary>Раскладка, выбранная значком в реплеере: null — встроенная, особое значение — скрыт.</summary>
     public string? ReplayerProfile { get; set; }
     /// <summary>
@@ -65,6 +67,19 @@ public sealed class TrackerSettings
     /// <summary>Через сколько попап закрывается после ухода курсора со стата и с самого попапа.</summary>
     public int HoverHideMs { get; set; } = 400;
     public int SessionGapMinutes { get; set; } = 30;
+    /// <summary>Виджет текущей сессии поверх столов: раздачи, итог в bb, график. Только по завершённым раздачам.</summary>
+    public bool SessionWidget { get; set; }
+    /// <summary>Положение виджета сессии на экране (левый верхний угол), если его двигали.</summary>
+    public double[]? SessionWidgetPos { get; set; }
+    /// <summary>
+    /// Подбирать парную раскладку по размеру стола: выбрана «…9max…» — на столах до 6 мест берётся «…6max…»
+    /// с тем же именем (и наоборот), если такая сохранена. Размер стола за раздачу не меняется, так что HUD остаётся статичным.
+    /// </summary>
+    public bool AutoProfileBySeats { get; set; } = true;
+    /// <summary>Выборку меньше этого числа писать мелкой цифрой у значения (как в Hand2Note); 0 — не писать.</summary>
+    public int SampleSubscriptBelow { get; set; } = 10;
+    /// <summary>Показывать 99 вместо 100 — трёхзначное число не влезает в узкую ячейку.</summary>
+    public bool Cap100To99 { get; set; } = true;
     /// <summary>Автобэкап pg_dump раз в N дней (0 — выключен) и сколько последних копий хранить (§13.11).</summary>
     public int AutoBackupDays { get; set; } = 1;
     /// <summary>MCP: заменять ники оппонентов псевдонимами в ответах агенту (данные уходят в облако модели).</summary>
@@ -72,6 +87,11 @@ public sealed class TrackerSettings
     /// <summary>MCP: разрешить агенту изменения (статы, профиль HUD, импорт). Только чтение — false.</summary>
     public bool McpAllowWrites { get; set; } = true;
     public int KeepBackups { get; set; } = 7;
+    /// <summary>
+    /// Папка автобэкапов базы (pg_dump). Пусто — «Документы\PKTracker\backups». Дамп — десятки мегабайт в день,
+    /// поэтому при тесном системном диске папку стоит перенести на другой.
+    /// </summary>
+    public string? BackupFolder { get; set; }
 
     public static string Folder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PKTracker");
     public static string FilePath => Path.Combine(Folder, "settings.json");
@@ -111,6 +131,8 @@ public sealed class TrackerHost : IAsyncDisposable
     public TrackerDb Db { get; }
     public StatRepository StatsRepo { get; }
     public HeroRepository Heroes { get; }
+    /// <summary>Цветовые метки, подписи и заметки на игроков.</summary>
+    public PKTracker.Data.Notes.PlayerNotesRepository Notes { get; }
     public List<CompiledStat> Stats { get; private set; } = new();
     public HudStatsService Hud { get; private set; } = null!;
     public List<string> HeroNames { get; private set; } = new();
@@ -120,6 +142,7 @@ public sealed class TrackerHost : IAsyncDisposable
         Db = new TrackerDb(cs);
         StatsRepo = new StatRepository(Db);
         Heroes = new HeroRepository(Db);
+        Notes = new PKTracker.Data.Notes.PlayerNotesRepository(Db);
     }
 
     public static async Task<TrackerHost> StartAsync(string connectionString, string roomCode = "POKERKING", CancellationToken ct = default)

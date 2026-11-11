@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using PKTracker.Core.Model;
 using PKTracker.Engine;
+using PKTracker.Parsers;
 using PKTracker.Parsers.Wpn;
 
 namespace PKTracker.Cli;
@@ -49,15 +50,19 @@ public static class Program
 
     private static int Verify(string dir, string? hero)
     {
-        var parser = new WpnHandParser();
         int hands = 0, errors = 0, invFails = 0, cash = 0, tourney = 0;
         int rit = 0, bomb = 0, dead = 0, noSb = 0, hu = 0, known = 0, decisions = 0, evHands = 0;
         var sw = Stopwatch.StartNew();
-        var files = Directory.EnumerateFiles(dir, "*.txt", SearchOption.AllDirectories).ToList();
+        var files = Directory.EnumerateFiles(dir, "*.*", SearchOption.AllDirectories).Where(ParserRegistry.LooksLikeHistoryFile).ToList();
+        var formats = new Dictionary<string, int>();
         foreach (var f in files)
         {
             var text = File.ReadAllText(f, Encoding.UTF8);
-            foreach (var r in parser.Parse(text, WpnFileNameParser.ToSource(f, hero)))
+            // verify не привязан к руму: формат каждого файла определяется по его началу
+            var detected = ParserRegistry.Detect(text.AsSpan(0, Math.Min(text.Length, 4096)), "POKERKING");
+            if (detected == null) continue;
+            formats[detected.Value.Room.Network] = formats.GetValueOrDefault(detected.Value.Room.Network) + 1;
+            foreach (var r in detected.Value.Parser.Parse(text, ParserRegistry.SourceFor(f, hero)))
             {
                 hands++;
                 if (!r.Ok)
@@ -93,7 +98,7 @@ public static class Program
         }
         sw.Stop();
         Console.WriteLine($"""
-            Файлов:          {files.Count}
+            Файлов:          {files.Count}  ({string.Join(", ", formats.Select(kv => $"{kv.Key} {kv.Value}"))})
             Раздач:          {hands}  (кеш {cash} / турниры {tourney})
             Ошибок парсера:  {errors}
             Нарушений инв.:  {invFails}

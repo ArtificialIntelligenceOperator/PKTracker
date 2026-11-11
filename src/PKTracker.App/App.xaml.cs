@@ -46,6 +46,41 @@ public partial class App : Application
         _main.Show();
 
         await Services.StartAsync();
+
+        // «--tab <название>» — открыть приложение сразу на нужной вкладке (ярлык на «Аналитика», проверка интерфейса).
+        int ti = Array.IndexOf(e.Args, "--tab");
+        if (ti >= 0 && ti + 1 < e.Args.Length) _main.SelectTab(e.Args[ti + 1]);
+
+        // «--replay <номер раздачи>» — сразу открыть раздачу в реплеере (номер рума или внутренний hand_pk).
+        int ri = Array.IndexOf(e.Args, "--replay");
+        if (ri >= 0 && ri + 1 < e.Args.Length && long.TryParse(e.Args[ri + 1], out long handId) && Services.Host is { } replayHost)
+        {
+            try
+            {
+                var pk = await Task.Run(() => new PKTracker.Data.ReportRepository(replayHost.Db).ResolveHandPkAsync(handId));
+                if (pk is { } found) new Replayer.ReplayerWindow(replayHost, found, Services.Settings).Show();
+                else Services.Log("App", $"Раздача {handId} не найдена");
+            }
+            catch (Exception ex) { Services.Log("App", "Реплеер: " + ex.Message); }
+        }
+
+        // Предпросмотр раскладки без стола: «PKTracker.exe --preview <ник> [вкладка]» — панель со всеми
+        // вкладками и попап. Нужен, чтобы проверить раскладку глазами, не открывая клиент рума.
+        int pi = Array.IndexOf(e.Args, "--preview");
+        if (pi >= 0 && pi + 1 < e.Args.Length)
+        {
+            // «--preview <ник> [группа/вкладка] [код стата]»: третий аргумент сразу открывает разбор стата.
+            try
+            {
+                await Hud.LayoutPreview.ShowAsync(Services, e.Args[pi + 1], pi + 2 < e.Args.Length ? e.Args[pi + 2] : null,
+                    pi + 3 < e.Args.Length ? e.Args[pi + 3] : null);
+            }
+            catch (Exception ex)
+            {
+                Services.Log("App", "Предпросмотр раскладки: " + ex);
+                MessageBox.Show(ex.Message, "PKTracker — предпросмотр", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
     }
 
     private void OnDispatcherUnhandled(object sender, DispatcherUnhandledExceptionEventArgs e)

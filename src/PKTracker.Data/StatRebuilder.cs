@@ -4,7 +4,7 @@ using PKTracker.Core.Model;
 using PKTracker.Data.Import;
 using PKTracker.Engine;
 using PKTracker.Engine.Stats;
-using PKTracker.Parsers.Wpn;
+using PKTracker.Parsers;
 using ZstdSharp;
 
 namespace PKTracker.Data;
@@ -93,12 +93,16 @@ public sealed class StatRebuilder(TrackerDb db)
 
         if (decisions)
         {
-            await using var cmd = new NpgsqlCommand("""
-                SELECT hand_pk, seq, seat, player_id, street, position, facing, bet_level, my_last_level, to_call, pot_before,
-                       eff_stack, players_in, players_behind, num_limpers, num_callers, ctx_bits, chosen, chosen_amount,
-                       size_pct, is_all_in, hand_strength, board_texture, stack_bucket,
-                       vs_position, opener_position, to_amount, line_bits, facing_amount
-                  FROM hand_decisions WHERE hand_pk > $1 AND hand_pk <= $2
+            // fact_bits игрока — исход раздачи для статов вида «выиграл без вскрытия в таком-то споте».
+            await using var cmd = new NpgsqlCommand($"""
+                SELECT d.hand_pk, d.seq, d.seat, d.player_id, d.street, d.position, d.facing, d.bet_level, d.my_last_level, d.to_call, d.pot_before,
+                       d.eff_stack, d.players_in, d.players_behind, d.num_limpers, d.num_callers, d.ctx_bits, d.chosen, d.chosen_amount,
+                       d.size_pct, d.is_all_in, d.hand_strength, d.board_texture, d.stack_bucket,
+                       d.vs_position, d.opener_position, d.to_amount, d.line_bits, d.facing_amount,
+                       {DecisionColumns.Select("d")}, hp.fact_bits
+                  FROM hand_decisions d
+                  LEFT JOIN hand_players hp ON hp.hand_pk = d.hand_pk AND hp.seat = d.seat
+                 WHERE d.hand_pk > $1 AND d.hand_pk <= $2
                 """, conn);
             cmd.Parameters.AddWithValue(fromPk);
             cmd.Parameters.AddWithValue(toPk);
@@ -109,6 +113,7 @@ public sealed class StatRebuilder(TrackerDb db)
                 var (ctx, ids) = Ctx(pk);
                 byte seat = (byte)r.GetInt16(2);
                 ids[seat] = r.GetInt64(3);
+                var x = DecisionColumns.Read(r, 29);
                 ctx.Decisions.Add(new DecisionPoint
                 {
                     Hand = ctx.Hand, Seq = r.GetInt16(1), Seat = seat, PlayerName = "",
@@ -122,6 +127,10 @@ public sealed class StatRebuilder(TrackerDb db)
                     StackBucket = (byte)r.GetInt16(23),
                     VsPosition = (Position)r.GetInt16(24), OpenerPosition = (Position)r.GetInt16(25), ToAmount = r.GetInt64(26),
                     LineBits = r.GetInt16(27), FacingAmount = r.GetInt64(28),
+                    PfaLineBits = x.PfaLine, OppLineBits = x.OppLine, PotRaises = x.PotRaises, PfLimpers = x.PfLimpers,
+                    PfrPosition = x.PfrPos, FlopPlayers = x.FlopPlayers, FlopMask = x.FlopMask, VsStack = x.VsStack,
+                    StartEffStack = x.StartEff, CallersBefore3b = x.CallersBefore3b, MadeHandBits = x.MadeHand,
+                    Outcome = r.IsDBNull(29 + DecisionColumns.Count) ? 0 : (FactBits)r.GetInt64(29 + DecisionColumns.Count),
                 });
             }
         }
@@ -250,7 +259,14 @@ public sealed class StatRebuilder(TrackerDb db)
     {
         var plain = stats.Where(s => s.Scope != StatScope.Expression && s.StatId > 0).ToList();
         var heroSet = new HashSet<string>(heroes, StringComparer.Ordinal);
-        var parser = new WpnHandParser(db.RoomCode);
+        // В базе могут лежать раздачи нескольких румов (рум в настройках меняли): текст каждой разбирает
+        // парсер её рума, а не активного — иначе чужой формат обрывал бы ребилд на середине.
+        var parsers = new Dictionary<string, PKTracker.Core.Abstractions.IHandHistoryParser>(StringComparer.OrdinalIgnoreCase);
+        PKTracker.Core.Abstractions.IHandHistoryParser ParserOf(string room)
+        {
+            if (!parsers.TryGetValue(room, out var p)) parsers[room] = p = ParserRegistry.ForRoom(room);
+            return p;
+        }
         await using var conn = await db.Import.OpenConnectionAsync(ct);
         long max = await MaxHandPkAsync(conn, ct);
 
@@ -264,7 +280,7 @@ public sealed class StatRebuilder(TrackerDb db)
         {
             long to = Math.Min(from + Batch, max);
             var batch = new List<(long Pk, ParsedHand Hand, HandContext Ctx)>();
-            await using (var cmd = new NpgsqlCommand("SELECT r.hand_pk, r.body, r.source_file, r.file_offset FROM hand_raw r WHERE r.hand_pk > $1 AND r.hand_pk <= $2 ORDER BY r.hand_pk", conn))
+            await using (var cmd = new NpgsqlCommand("SELECT r.hand_pk, r.body, r.source_file, r.file_offset, rm.code FROM hand_raw r JOIN hands h ON h.hand_pk = r.hand_pk JOIN room rm ON rm.room_id = h.room_id WHERE r.hand_pk > $1 AND r.hand_pk <= $2 ORDER BY r.hand_pk", conn))
             {
                 cmd.Parameters.AddWithValue(from);
                 cmd.Parameters.AddWithValue(to);
@@ -273,7 +289,7 @@ public sealed class StatRebuilder(TrackerDb db)
                 {
                     var text = Encoding.UTF8.GetString(dec.Unwrap((byte[])r[1]));
                     var file = r.GetString(2);
-                    var h = parser.ParseHand(text, WpnFileNameParser.ToSource(file));
+                    var h = ParseOne(ParserOf(r.GetString(4)), text, file);
                     h.FileOffset = r.GetInt64(3);
                     foreach (var s in h.Seats) if (heroSet.Contains(s.Name)) s.IsHero = true;
                     batch.Add((r.GetInt64(0), h, HandContextBuilder.Build(h, computeEv: true)));
@@ -346,5 +362,13 @@ public sealed class StatRebuilder(TrackerDb db)
     {
         await using var cmd = new NpgsqlCommand(sql, conn, tx);
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>Ребилд разбирает сохранённый текст одной раздачи тем же парсером, что и импорт.</summary>
+    private static PKTracker.Core.Model.ParsedHand ParseOne(PKTracker.Core.Abstractions.IHandHistoryParser parser, string text, string file)
+    {
+        var r = parser.Parse(text, ParserRegistry.SourceFor(file)).FirstOrDefault()
+                ?? throw new FormatException("Пустой текст раздачи");
+        return r.Hand ?? throw new FormatException(r.Error);
     }
 }

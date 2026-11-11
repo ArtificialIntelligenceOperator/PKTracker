@@ -37,15 +37,15 @@ public sealed class ProfileBadge : Border
         Width = 18;
         Height = 18;
         CornerRadius = new CornerRadius(9);
-        Background = new SolidColorBrush(Color.FromArgb(0xD0, 0x1E, 0x17, 0x12));
-        BorderBrush = new SolidColorBrush(Color.FromRgb(0xD0, 0x8A, 0x4A));
+        Background = new SolidColorBrush(Color.FromArgb(0xD0, 0x1A, 0x19, 0x30));
+        BorderBrush = new SolidColorBrush(Color.FromRgb(0x7C, 0x6F, 0xF0));
         BorderThickness = new Thickness(1);
         Cursor = Cursors.Hand;
         ToolTip = "Раскладка HUD: клик — выбрать, перетаскиванием — переместить";
         Child = new TextBlock
         {
             Text = "▤",
-            Foreground = new SolidColorBrush(Color.FromRgb(0xE3, 0xA4, 0x5A)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0x92, 0xF8)),
             FontSize = 11,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,

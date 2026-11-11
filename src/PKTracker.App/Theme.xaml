@@ -3,17 +3,17 @@
                     xmlns:infra="clr-namespace:PKTracker.App.Infrastructure">
 
     <!-- ══ Палитра: тёмная, тёплая коричневая ════════════════════════════════════ -->
-    <Color x:Key="C.Bg0">#17120F</Color>
-    <Color x:Key="C.Bg1">#211A15</Color>
-    <Color x:Key="C.Bg2">#2B221C</Color>
-    <Color x:Key="C.Bg3">#3A2E25</Color>
-    <Color x:Key="C.Border">#40332A</Color>
-    <Color x:Key="C.Accent">#D08A4A</Color>
-    <Color x:Key="C.AccentHover">#E3A060</Color>
-    <Color x:Key="C.AccentDim">#6E4A2C</Color>
-    <Color x:Key="C.Text">#EFE6DA</Color>
-    <Color x:Key="C.TextDim">#A8998A</Color>
-    <Color x:Key="C.Selection">#4A3727</Color>
+    <Color x:Key="C.Bg0">#151424</Color>
+    <Color x:Key="C.Bg1">#1D1C30</Color>
+    <Color x:Key="C.Bg2">#25243C</Color>
+    <Color x:Key="C.Bg3">#33314F</Color>
+    <Color x:Key="C.Border">#37355A</Color>
+    <Color x:Key="C.Accent">#7C6FF0</Color>
+    <Color x:Key="C.AccentHover">#9489F5</Color>
+    <Color x:Key="C.AccentDim">#453F86</Color>
+    <Color x:Key="C.Text">#F1F0F8</Color>
+    <Color x:Key="C.TextDim">#A3A1BD</Color>
+    <Color x:Key="C.Selection">#3A3766</Color>
 
     <SolidColorBrush x:Key="Bg0" Color="{StaticResource C.Bg0}" />
     <SolidColorBrush x:Key="Bg1" Color="{StaticResource C.Bg1}" />
@@ -26,8 +26,8 @@
     <SolidColorBrush x:Key="Text" Color="{StaticResource C.Text}" />
     <SolidColorBrush x:Key="TextDim" Color="{StaticResource C.TextDim}" />
     <SolidColorBrush x:Key="Selection" Color="{StaticResource C.Selection}" />
-    <SolidColorBrush x:Key="Positive" Color="#8CC084" />
-    <SolidColorBrush x:Key="Negative" Color="#E0735A" />
+    <SolidColorBrush x:Key="Positive" Color="#3ECF8E" />
+    <SolidColorBrush x:Key="Negative" Color="#F0708C" />
 
     <infra:SignToBrushConverter x:Key="SignBrush" Positive="{StaticResource Positive}" Negative="{StaticResource Negative}" Neutral="{StaticResource Text}" />
 
@@ -60,8 +60,8 @@
         <Setter Property="Background" Value="{StaticResource Bg1}" />
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="6" />
-        <Setter Property="Padding" Value="12,8" />
+        <Setter Property="CornerRadius" Value="12" />
+        <Setter Property="Padding" Value="14,10" />
     </Style>
 
     <!-- ══ ToolTip ════════════════════════════════════════════════════════════════ -->
@@ -107,7 +107,7 @@
     <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
         <Setter Property="Background" Value="{StaticResource Accent}" />
         <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
-        <Setter Property="Foreground" Value="#1A130E" />
+        <Setter Property="Foreground" Value="#FFFFFF" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Template">
             <Setter.Value>
@@ -166,7 +166,7 @@
                     <StackPanel Orientation="Horizontal" Background="Transparent">
                         <Border x:Name="Box" Width="16" Height="16" CornerRadius="4" Background="{StaticResource Bg0}"
                                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" VerticalAlignment="Center">
-                            <Path x:Name="Mark" Data="M 3,8 L 6.5,11.5 L 13,4.5" Stroke="#1A130E" StrokeThickness="2" Visibility="Collapsed" />
+                            <Path x:Name="Mark" Data="M 3,8 L 6.5,11.5 L 13,4.5" Stroke="#FFFFFF" StrokeThickness="2" Visibility="Collapsed" />
                         </Border>
                         <ContentPresenter Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
@@ -351,10 +351,10 @@
         <Setter Property="IsReadOnly" Value="True" />
         <Setter Property="HeadersVisibility" Value="Column" />
         <Setter Property="GridLinesVisibility" Value="Horizontal" />
-        <Setter Property="HorizontalGridLinesBrush" Value="#2E251E" />
+        <Setter Property="HorizontalGridLinesBrush" Value="#292842" />
         <Setter Property="Background" Value="{StaticResource Bg1}" />
         <Setter Property="RowBackground" Value="{StaticResource Bg1}" />
-        <Setter Property="AlternatingRowBackground" Value="#251D18" />
+        <Setter Property="AlternatingRowBackground" Value="#201F36" />
         <Setter Property="Foreground" Value="{StaticResource Text}" />
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
@@ -434,7 +434,7 @@
                             <DockPanel Margin="14,0">
                                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,24,0">
                                     <Border Width="26" Height="26" CornerRadius="6" Background="{StaticResource Accent}">
-                                        <TextBlock Text="PK" FontWeight="Bold" FontSize="12" Foreground="#1A130E"
+                                        <TextBlock Text="PK" FontWeight="Bold" FontSize="12" Foreground="#FFFFFF"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
                                     <TextBlock Text="Tracker" Margin="8,0,0,0" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Text}" VerticalAlignment="Center" />
@@ -448,6 +448,32 @@
             </Setter.Value>
         </Setter>
     </Style>
+    <!-- Вкладки внутри страницы: компактнее навигационных, чтобы десяток вкладок попапа помещался в одну строку -->
+    <Style x:Key="SubTab" TargetType="TabItem">
+        <Setter Property="Foreground" Value="{StaticResource TextDim}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Grid Background="Transparent" Margin="1,0">
+                        <Border x:Name="Pill" Margin="0,2" CornerRadius="7" Background="{StaticResource Bg3}" Visibility="Hidden" />
+                        <ContentPresenter ContentSource="Header" Margin="10,5,10,5" HorizontalAlignment="Center" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource Text}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource Text}" />
+                            <Setter TargetName="Pill" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
     <Style TargetType="TabItem">
         <Setter Property="Foreground" Value="{StaticResource TextDim}" />
         <Setter Property="FontSize" Value="13" />
@@ -457,8 +483,8 @@
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">
                     <Grid Background="Transparent" Margin="2,0">
-                        <ContentPresenter ContentSource="Header" Margin="12,13,12,13" HorizontalAlignment="Center" />
-                        <Border x:Name="Underline" Height="3" VerticalAlignment="Bottom" CornerRadius="2,2,0,0" Background="{StaticResource Accent}" Visibility="Hidden" />
+                        <Border x:Name="Underline" Margin="0,7" CornerRadius="9" Background="{StaticResource Bg3}" Visibility="Hidden" />
+                        <ContentPresenter ContentSource="Header" Margin="14,13,14,13" HorizontalAlignment="Center" />
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">

@@ -165,7 +165,13 @@ internal static class Commands
                 var unknown = profile.StatCodes().Where(c => !host.Hud.Stats.ContainsKey(c)).ToList();
                 foreach (var code in unknown) Console.WriteLine($"  НЕТ ТАКОГО СТАТА: {code}");
 
-                foreach (var page in profile.Pages.Prepend(profile.Panel))
+                if (opts.Has("print"))
+                {
+                    // Панель над столом считается по агрегатам — печатаем именно её, чтобы сверить с эталоном.
+                    var agg = await host.Hud.GetAggAsync(found.PlayerId, kind);
+                    foreach (var pp in profile.AllPanelPages()) LabCommand.Print(pp, agg.EvaluatePage(pp));
+                }
+                foreach (var page in profile.AllPanelPages().Concat(profile.Pages))
                 {
                     var sw = Stopwatch.StartNew();
                     var values = evaluator.Evaluate(page, rows);
@@ -323,12 +329,25 @@ internal static class Commands
                 foreach (var s in last.Seats) Console.WriteLine($"  Seat {s.Seat}: {s.Name} {s.Country} {s.ExternalId}");
                 return 0;
             }
+            case "lab":
+                return LabCommand.Run(opts);
+            case "hud-import":
+            {
+                // Пакет HUD: статы в базу, профиль в %APPDATA%\PKTracker\hud, досчёт агрегатов новых статов.
+                var file = opts.Positional.FirstOrDefault() ?? throw new ArgumentException("Не указан файл пакета");
+                await using var host = await TrackerHost.StartAsync(cs, opts.Get("room") ?? settings.RoomCode);
+                var progress = new Progress<RebuildProgress>(p => Console.Write($"\r  {p.Stage}: {p.Done}/{p.Total}      "));
+                var res = await new HudPackageService(host).ImportAsync(file, progress);
+                Console.WriteLine();
+                Console.WriteLine($"Профиль «{res.ProfileName}»: статов в пакете {res.Stats}, новых/изменённых {res.ChangedStats.Count}, пересчитано {res.RebuiltStats}");
+                return 0;
+            }
             default:
                 return Program.Usage();
         }
     }
 
-    private sealed class Options
+    internal sealed class Options
     {
         private readonly Dictionary<string, string?> _named = new();
         public List<string> Positional { get; } = new();
@@ -342,7 +361,7 @@ internal static class Commands
                 if (list[i].StartsWith("--", StringComparison.Ordinal))
                 {
                     var key = list[i][2..];
-                    string? val = i + 1 < list.Count && !list[i + 1].StartsWith("--", StringComparison.Ordinal) && key is "conn" or "hero" or "stat" or "room" or "profile" or "player" or "drill"
+                    string? val = i + 1 < list.Count && !list[i + 1].StartsWith("--", StringComparison.Ordinal) && key is "conn" or "hero" or "stat" or "room" or "profile" or "player" or "drill" or "pack" or "page" or "opp" or "hit" or "scope" or "where" or "group" or "sum"
                         ? list[++i] : null;
                     o._named[key] = val;
                 }

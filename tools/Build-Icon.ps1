@@ -13,9 +13,12 @@ if (-not $Out) {
     $Out = Join-Path $root '..\src\PKTracker.App\PKTracker.ico'
 }
 
-$bg     = [System.Drawing.ColorTranslator]::FromHtml('#211A15')
-$border = [System.Drawing.ColorTranslator]::FromHtml('#40332A')
-$accent = [System.Drawing.ColorTranslator]::FromHtml('#D08A4A')
+# Цвета темы приложения: тёмный сине-фиолетовый фон с переходом, лавандовый акцент.
+$bgTop  = [System.Drawing.ColorTranslator]::FromHtml('#34316A')
+$bgLow  = [System.Drawing.ColorTranslator]::FromHtml('#171626')
+$border = [System.Drawing.ColorTranslator]::FromHtml('#453F86')
+$accent = [System.Drawing.ColorTranslator]::FromHtml('#8E84F5')
+$glyph  = [System.Drawing.ColorTranslator]::FromHtml('#EDEAFF')
 
 function New-IconBitmap([int]$s) {
     $bmp = New-Object System.Drawing.Bitmap($s, $s, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -32,7 +35,10 @@ function New-IconBitmap([int]$s) {
     $path.AddArc($m - $d, $m - $d, $d, $d, 0, 90)
     $path.AddArc(0, $m - $d, $d, $d, 90, 90)
     $path.CloseFigure()
-    $g.FillPath((New-Object System.Drawing.SolidBrush($bg)), $path)
+    $rect = New-Object System.Drawing.RectangleF(0, 0, [single]$s, [single]$s)
+    $fill = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $bgTop, $bgLow, [single]55)
+    $g.FillPath($fill, $path)
+    $fill.Dispose()
     if ($s -ge 32) {
         $g.DrawPath((New-Object System.Drawing.Pen($border, [single]([math]::Max(1, $s / 32)))), $path)
     }
@@ -51,7 +57,7 @@ function New-IconBitmap([int]$s) {
     $sf.Alignment = [System.Drawing.StringAlignment]::Center
     $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
     $box = New-Object System.Drawing.RectangleF(0, 0, [single]$s, [single]$s)
-    $g.DrawString([char]0x2660, $font, (New-Object System.Drawing.SolidBrush($accent)), $box, $sf)
+    $g.DrawString([char]0x2660, $font, (New-Object System.Drawing.SolidBrush($glyph)), $box, $sf)
     $font.Dispose()
 
     $g.Dispose()

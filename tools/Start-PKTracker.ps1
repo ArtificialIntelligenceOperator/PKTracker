@@ -43,6 +43,11 @@ if ($exe) {
     $stale = $newest -and $newest.LastWriteTimeUtc -gt $exeTime
 }
 
+# SDK может стоять не в Program Files (например, на другом диске): DOTNET_ROOT указывает на него.
+if ($env:DOTNET_ROOT -and (Test-Path (Join-Path $env:DOTNET_ROOT 'dotnet.exe'))) {
+    $env:PATH = $env:DOTNET_ROOT + ';' + $env:PATH
+}
+
 $sdk = $false
 try { $sdk = [bool](& dotnet --list-sdks 2>$null) } catch { $sdk = $false }
 

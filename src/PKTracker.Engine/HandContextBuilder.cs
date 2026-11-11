@@ -8,7 +8,7 @@ namespace PKTracker.Engine;
 public static class HandContextBuilder
 {
     /// <summary>Версия логики построения контекста. Любое изменение семантики → ++ и полный ребилд (§15.6).</summary>
-    public const short ContextVersion = 3;
+    public const short ContextVersion = 6;
 
     private const byte NotFolded = 255;
 
@@ -74,6 +74,10 @@ public static class HandContextBuilder
         int pfAggressor = 0, streetAggressor = 0, prevStreetAggressor = 0;
         bool streetBetIsCbet = false;
         var street = Street.Preflop;
+        int pfRaisesTotal = 0, pfLimpersTotal = 0, flopPlayers = 0;
+        int callersBefore3b = 0;   // коллеров опена до 3-бета: отличает сквиз от обычного 3-бета
+        short flopMask = 0;
+        var pfrPos = Position.None;
 
         var decisions = new List<DecisionPoint>(h.Actions.Count);
         var records = new List<ActionRecord>(h.Actions.Count);
@@ -90,6 +94,19 @@ public static class HandContextBuilder
             {
                 if (a.Street < street) throw new InvalidOperationException("Street went backwards");
                 prevStreetAggressor = street == Street.Preflop ? pfAggressor : streetAggressor;
+                if (street == Street.Preflop)
+                {
+                    // Снимок конца префлопа: тип банка, кто его открыл и кто дошёл до флопа. Постфлоп-споты
+                    // («рейзер против BB», «лимп-пот блайндов», 3-бет-пот) определяются только по нему.
+                    pfRaisesTotal = pfRaises; pfLimpersTotal = pfLimpers;
+                    pfrPos = pfRaises > 0 ? pos.BySeat[pfAggressor] : Position.None;
+                    for (int i = 0; i < size; i++)
+                        if (dealt[i] && foldStreet[i] == NotFolded && pos.BySeat[i] != Position.None)
+                        {
+                            flopPlayers++;
+                            flopMask |= (short)(1 << (int)pos.BySeat[i]);
+                        }
+                }
                 street = a.Street;
                 Array.Clear(streetPut);
                 Array.Clear(acted);
@@ -200,6 +217,9 @@ public static class HandContextBuilder
             short myLine = lineBits[s];
             long facingAmount = level;
 
+            // До применения действия: собственный рейз не должен попасть в «тип банка» своей же точки решения.
+            var pfrPosBefore = pf && pfRaises > 0 ? pos.BySeat[pfAggressor] : Position.None;
+
             Choice chosen;
             long chosenAmount = 0;
             short? sizePct = null;
@@ -253,7 +273,7 @@ public static class HandContextBuilder
                     {
                         pfRaises++;
                         if (pfRaises == 1) { openRaiser = s; openLimpers = pfLimpers; }
-                        if (pfRaises == 2) bits[s] |= FactBits.ThreeBet;
+                        if (pfRaises == 2) { bits[s] |= FactBits.ThreeBet; callersBefore3b = callersSnapshot; }
                         pfAggressor = s;
                         voluntary[s] = true;
                         bits[s] |= FactBits.Vpip | FactBits.Pfr;
@@ -264,6 +284,26 @@ public static class HandContextBuilder
                 default:
                     throw new InvalidOperationException();
             }
+
+            // Линии соперников: префлоп-агрессора и (в хедз-апе) единственного оппонента.
+            short pfaLine = !pf && pfRaisesTotal > 0 && pfAggressor != s ? lineBits[pfAggressor] : (short)0;
+            short oppLine = 0;
+            long tableMaxStart = 0;
+            for (int i = 0; i < size; i++)
+                if (i != s && dealt[i]) tableMaxStart = Math.Max(tableMaxStart, startStack[i]);
+            {
+                int other = -1, cnt = 0;
+                for (int i = 0; i < size; i++)
+                {
+                    if (i == s || !dealt[i] || foldStreet[i] != NotFolded) continue;
+                    cnt++; other = i;
+                }
+                if (!pf && cnt == 1) oppLine = lineBits[other];
+            }
+            long vsStart = hasAgg && lastAgg != s ? startStack[lastAgg] : 0;
+            // Как в Hand2Note: эффективный стек раздачи — против наибольшего стартового стека среди всех,
+            // кому сданы карты (а не только оставшихся): сверено с его фильтрами «20bb+ eff».
+            long startEff = Math.Min(startStack[s], tableMaxStart);
 
             short? strength = null;
             short texture = 0;
@@ -304,6 +344,16 @@ public static class HandContextBuilder
                 ToAmount = streetPut[s],
                 FacingAmount = facingAmount,
                 LineBits = myLine,
+                PfaLineBits = pfaLine,
+                OppLineBits = oppLine,
+                PotRaises = pf ? betLevel - 1 : pfRaisesTotal,
+                PfLimpers = pf ? limpersSnapshot : pfLimpersTotal,
+                PfrPosition = pf ? pfrPosBefore : pfrPos,
+                FlopPlayers = pf ? 0 : flopPlayers,
+                FlopMask = pf ? (short)0 : flopMask,
+                VsStack = vsStart,
+                CallersBefore3b = callersBefore3b,
+                StartEffStack = startEff,
             });
             acted[s] = true;
             if (!pf)
@@ -337,6 +387,7 @@ public static class HandContextBuilder
             for (int i = 0; i < size; i++) { totalInvested += invested[i]; totalCollected += collected[i]; }
 
             var players = new List<HandPlayerFacts>(dealtSeats.Length);
+            var finalBits = new FactBits[size];
             foreach (var seat in h.Seats.OrderBy(x => x.Seat))
             {
                 int i = seat.Seat;
@@ -360,6 +411,7 @@ public static class HandContextBuilder
                 if (seat.IsHero) b |= FactBits.IsHero;
                 if (seat.CardsKnown) b |= FactBits.CardsKnown;
                 if (h.Has(HandFlags.BombPot)) b &= ~(FactBits.Vpip | FactBits.Pfr | FactBits.ThreeBet);
+                finalBits[i] = b;
 
                 players.Add(new HandPlayerFacts
                 {
@@ -395,8 +447,11 @@ public static class HandContextBuilder
                     buf[0] = seat.HoleCards[0]!.Value; buf[1] = seat.HoleCards[1]!.Value;
                     for (int k = 0; k < n; k++) buf[2 + k] = board[k];
                     d.HandStrength = (short)HandEvaluator.Category(HandEvaluator.Evaluate(buf[..(2 + n)]));
+                    d.MadeHandBits = MadeHands.Classify(buf[0], buf[1], buf.Slice(2, n));
                 }
             }
+            // Исход раздачи виден из каждой точки решения: «выиграл без вскрытия» в конкретном споте.
+            foreach (var d in decisions) d.Outcome = finalBits[d.Seat];
 
             return new HandContext
             {

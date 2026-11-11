@@ -79,13 +79,16 @@ public sealed class PlayerRowsLoader(TrackerDb db)
     private static async Task<List<DecisionPoint>> LoadDecisionsAsync(
         NpgsqlConnection conn, long playerId, short[] kinds, Dictionary<long, HandInfo> infos, CancellationToken ct)
     {
-        await using var cmd = new NpgsqlCommand("""
+        // fact_bits игрока — исход раздачи (DecisionPoint.Outcome): отдельной колонки у решения нет.
+        await using var cmd = new NpgsqlCommand($"""
             SELECT d.hand_pk, d.seq, d.seat, d.street, d.position, d.facing, d.bet_level, d.my_last_level, d.to_call, d.pot_before,
                    d.eff_stack, d.players_in, d.players_behind, d.num_limpers, d.num_callers, d.ctx_bits, d.chosen, d.chosen_amount,
                    d.size_pct, d.is_all_in, d.hand_strength, d.board_texture, d.stack_bucket,
                    d.vs_position, d.opener_position, d.to_amount, d.line_bits, d.facing_amount,
-                   h.game_kind, h.flags, h.players_dealt, h.max_seats, h.sb, h.bb, h.ante
+                   h.game_kind, h.flags, h.players_dealt, h.max_seats, h.sb, h.bb, h.ante,
+                   {DecisionColumns.Select("d")}, hp.fact_bits
               FROM hand_decisions d JOIN hands h ON h.hand_pk = d.hand_pk
+              LEFT JOIN hand_players hp ON hp.hand_pk = d.hand_pk AND hp.seat = d.seat
              WHERE d.player_id = $1 AND h.game_kind = ANY($2)
              ORDER BY d.hand_pk DESC, d.seq
              LIMIT $3
@@ -99,6 +102,7 @@ public sealed class PlayerRowsLoader(TrackerDb db)
         {
             long pk = r.GetInt64(0);
             if (!infos.TryGetValue(pk, out var info)) infos[pk] = info = Info(r, 28);
+            var x = DecisionColumns.Read(r, 35);
             list.Add(new DecisionPoint
             {
                 Hand = info, Seq = r.GetInt16(1), Seat = (byte)r.GetInt16(2), PlayerName = "",
@@ -112,6 +116,10 @@ public sealed class PlayerRowsLoader(TrackerDb db)
                 BoardTexture = r.IsDBNull(21) ? (short)0 : r.GetInt16(21), StackBucket = (byte)r.GetInt16(22),
                 VsPosition = (Position)r.GetInt16(23), OpenerPosition = (Position)r.GetInt16(24), ToAmount = r.GetInt64(25),
                 LineBits = r.GetInt16(26), FacingAmount = r.GetInt64(27),
+                PfaLineBits = x.PfaLine, OppLineBits = x.OppLine, PotRaises = x.PotRaises, PfLimpers = x.PfLimpers,
+                PfrPosition = x.PfrPos, FlopPlayers = x.FlopPlayers, FlopMask = x.FlopMask, VsStack = x.VsStack,
+                StartEffStack = x.StartEff, CallersBefore3b = x.CallersBefore3b, MadeHandBits = x.MadeHand,
+                Outcome = r.IsDBNull(35 + DecisionColumns.Count) ? 0 : (FactBits)r.GetInt64(35 + DecisionColumns.Count),
             });
         }
         return list;

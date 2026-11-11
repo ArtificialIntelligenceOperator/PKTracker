@@ -41,6 +41,8 @@ public sealed class StarsHandParser : IHandHistoryParser
 {
     public string RoomCode => "POKERSTARS";
     public bool CanParse(ReadOnlySpan<char> fileHead) => fileHead.StartsWith("PokerStars Hand #");
+    // Как понять, что раздача в дописываемом файле закончена: с чего начинается заголовок и метка итогов.
+    public HandBoundary Boundary { get; } = new(["PokerStars "], "*** SUMMARY ***");
     public IEnumerable<HandParseResult> Parse(string text, HandSourceInfo source, long baseOffset = 0) { ... }
 }
 ```
@@ -84,7 +86,11 @@ dotnet run --project src\PKTracker.Cli -- verify "C:\путь\к\истории"
 ### 5. Регистрация рума
 
 1. Добавьте рум в новую миграцию `src/PKTracker.Data/Migrations/NNN_*.sql`.
-2. Добавьте код рума в список в настройках (`MainWindow.xaml`, поле «Рум»).
+2. Добавьте строку в `ParserRegistry.Entries` (`src/PKTracker.Parsers/ParserRegistry.cs`): код, сеть, подпись
+   и фабрика парсера. Список румов в настройках, импорт, дозор и ребилд берут его оттуда.
+3. Правила рума для HUD — `RoomHudPolicy` (`src/PKTracker.Data/RoomRules.cs`) и `docs/ROOM_RULES.md`.
+4. Общие приёмы (суммы, карты, поиск ника, перевод времени в UTC, учёт ставок улицы) — `Parsers/Common`.
+5. Проверка корпуса без базы: `tools/VerifyParsers <папка> [--only ROOM]`.
 3. Если формат имени файла другой — свой `*FileNameParser` (тип игры и идентификаторы стола берутся из имени файла,
    потому что в тексте раздачи SNG и MTT часто неразличимы).
 
@@ -114,6 +120,8 @@ dotnet run --project src\PKTracker.Cli -- verify "C:\путь\к\истории"
 ## Чек-лист
 
 - [ ] `CanParse` отличает формат по началу файла
+- [ ] `Boundary` задаёт начало раздачи и метку итогов (для XML — закрывающий тег и `WholeFile`): без него
+      импорт дописываемых файлов считает раздачи незавершёнными и молча ничего не берёт
 - [ ] 0 ошибок и 0 нарушений инвариантов на своём корпусе (`verify`)
 - [ ] тесты на ловушки формата
 - [ ] рум добавлен в миграцию и в настройки

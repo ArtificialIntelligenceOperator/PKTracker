@@ -16,7 +16,24 @@ public sealed class ReplayerWindow : Window
     private readonly long _handPk;
     private ReplayHand? _hand;
     private int _step; // число применённых действий
-    private readonly Canvas _canvas = new() { Width = 820, Height = 480 };
+    /// <summary>Первое решение игроков: анте и блайнды до него «проигрывать» незачем — раздача открывается уже с ними.</summary>
+    private int _first;
+    // Стол: центр и радиусы кольца мест. Холст с запасом по краям — панели HUD стоят снаружи от мест и не должны
+    // закрывать ни сами места, ни друг друга.
+    private const double W = 1280, H = 660, CX = W / 2, CY = H / 2, RX = 365, RY = 185;
+    private readonly Canvas _canvas = new() { Width = W, Height = H };
+    private readonly System.Windows.Threading.DispatcherTimer _play = new();
+    private Button _playButton = null!;
+    private bool _loaded;
+    private readonly TextBlock _status = new() { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.75 };
+    private readonly System.Windows.Controls.Primitives.ToggleButton _bbToggle = new()
+    {
+        Content = "BB", ToolTip = "Стеки, ставки и банк в больших блайндах вместо фишек (клавиша B)", Padding = new Thickness(12, 3, 12, 3),
+        Margin = new Thickness(14, 0, 0, 0), Focusable = false,
+    };
+    private readonly ComboBox _speed = new() { Width = 64, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+    /// <summary>Панели HUD по местам: строятся один раз, а не на каждый шаг — иначе воспроизведение шло бы рывками.</summary>
+    private readonly Dictionary<int, Border> _hudCache = new();
     private readonly ListBox _log = new() { Width = 300, FontFamily = new FontFamily("Consolas"), FontSize = 11, Margin = new Thickness(0, 0, 10, 0) };
     private readonly TextBlock _header = new() { Margin = new Thickness(12, 8, 12, 6), FontWeight = FontWeights.SemiBold, FontSize = 13 };
 
@@ -38,34 +55,102 @@ public sealed class ReplayerWindow : Window
         _host = host;
         _handPk = handPk;
         Title = "Реплеер";
-        Width = 1160;
-        Height = 600;
+        Width = 1500;
+        Height = 780;
         Background = (Brush)Application.Current.Resources["Bg0"];
         Foreground = (Brush)Application.Current.Resources["Text"];
         FontFamily = new FontFamily("Segoe UI");
         PKTracker.App.Infrastructure.Win32.ApplyDarkFrame(this);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 4, 8, 8) };
-        void Btn(string text, Action a)
+        // Любая ручная навигация останавливает воспроизведение: иначе таймер тут же увёл бы раздачу дальше.
+        Button Btn(string text, string tip, Action a)
         {
-            var b = new Button { Content = text, Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 0, 6, 0) };
-            b.Click += (_, _) => { a(); Render(); };
+            var b = new Button { Content = text, ToolTip = tip, Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(0, 0, 6, 0), Focusable = false };
+            b.Click += (_, _) => { Pause(); a(); Render(); };
             buttons.Children.Add(b);
+            return b;
         }
-        Btn("⏮", () => _step = 0);
-        Btn("◀", () => _step = Math.Max(0, _step - 1));
-        Btn("▶", () => _step = Math.Min(_hand?.Actions.Count ?? 0, _step + 1));
-        Btn("⏭", () => _step = _hand?.Actions.Count ?? 0);
+        Btn("⏮", "В начало (Home)", () => _step = _first);
+        Btn("◀", "Шаг назад (←)", () => _step = Math.Max(0, _step - 1));
+        _playButton = new Button { Content = "▶", ToolTip = "Воспроизвести / пауза (пробел)", Padding = new Thickness(14, 3, 14, 3), Margin = new Thickness(0, 0, 6, 0), Focusable = false,
+            Style = (Style)Application.Current.FindResource("AccentButton") };
+        _playButton.Click += (_, _) => TogglePlay();
+        buttons.Children.Add(_playButton);
+        Btn("▶|", "Шаг вперёд (→)", () => _step = Math.Min(_hand?.Actions.Count ?? 0, _step + 1));
+        Btn("⏭", "В конец (End)", () => _step = _hand?.Actions.Count ?? 0);
         foreach (var st in new[] { Street.Flop, Street.Turn, Street.River })
         {
             var s = st;
-            Btn(s.ToString(), () =>
+            Btn(s.ToString(), $"К началу улицы: {s}", () =>
             {
                 if (_hand == null) return;
                 int idx = _hand.Actions.FindIndex(a => a.Street >= s);
                 _step = idx < 0 ? _hand.Actions.Count : idx;
             });
         }
+
+        buttons.Children.Add(new TextBlock { Text = "Скорость", Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.75 });
+        foreach (var x in new[] { "×1", "×2", "×4" }) _speed.Items.Add(x);
+        _speed.SelectedIndex = 0;
+        _speed.Focusable = false;
+        _speed.SelectionChanged += (_, _) => _play.Interval = StepInterval();
+        buttons.Children.Add(_speed);
+
+        // В турнире глубину стека и размер ставки считают в блайндах: «17 bb», а не «2 091 706».
+        _bbToggle.IsChecked = _settings.ReplayerInBb;
+        _bbToggle.Click += (_, _) =>
+        {
+            _settings.ReplayerInBb = _bbToggle.IsChecked == true;
+            try { _settings.Save(); } catch (System.IO.IOException) { }
+            Render();
+        };
+        buttons.Children.Add(_bbToggle);
+
+        // Копирование: ход раздачи читаемым текстом (в текущих единицах — фишки или BB) либо исходный текст рума.
+        var copy = new Button { Content = "Копировать ▾", ToolTip = "Ход раздачи в буфер обмена (Ctrl+C)", Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(6, 0, 0, 0), Focusable = false };
+        var copyMenu = new ContextMenu { PlacementTarget = copy, Placement = System.Windows.Controls.Primitives.PlacementMode.Top };
+        var copyCourse = new MenuItem { Header = "Ход раздачи", InputGestureText = "Ctrl+C" };
+        copyCourse.Click += (_, _) => CopyTranscript();
+        var copyRaw = new MenuItem { Header = "Исходный текст раздачи" };
+        copyRaw.Click += async (_, _) => await CopyRawAsync();
+        copyMenu.Items.Add(copyCourse);
+        copyMenu.Items.Add(copyRaw);
+        copy.Click += (_, _) => copyMenu.IsOpen = true;
+        buttons.Children.Add(copy);
+        buttons.Children.Add(_status);
+
+        _play.Interval = StepInterval();
+        _play.Tick += (_, _) =>
+        {
+            if (_hand == null || _step >= _hand.Actions.Count) { Pause(); return; }
+            _step++;
+            Render();
+            if (_step >= _hand.Actions.Count) Pause();
+        };
+        Closed += (_, _) => _play.Stop();
+        PreviewKeyDown += (_, e) =>
+        {
+            if (_hand == null) return;
+            switch (e.Key)
+            {
+                case System.Windows.Input.Key.Space: TogglePlay(); break;
+                case System.Windows.Input.Key.Right: Pause(); _step = Math.Min(_hand.Actions.Count, _step + 1); Render(); break;
+                case System.Windows.Input.Key.Left: Pause(); _step = Math.Max(0, _step - 1); Render(); break;
+                case System.Windows.Input.Key.Home: Pause(); _step = _first; Render(); break;
+                case System.Windows.Input.Key.End: Pause(); _step = _hand.Actions.Count; Render(); break;
+                case System.Windows.Input.Key.C when System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control:
+                    CopyTranscript();
+                    break;
+                case System.Windows.Input.Key.B:
+                    _bbToggle.IsChecked = _settings.ReplayerInBb = !_settings.ReplayerInBb;
+                    try { _settings.Save(); } catch (System.IO.IOException) { }
+                    Render();
+                    break;
+                default: return;
+            }
+            e.Handled = true;
+        };
 
         var dock = new DockPanel();
         DockPanel.SetDock(_header, Dock.Top);
@@ -81,11 +166,116 @@ public sealed class ReplayerWindow : Window
 
     private async Task LoadAsync()
     {
+        // Loaded у окна может прийти повторно (смена темы, перенос между мониторами) — раздача загружается один раз.
+        if (_loaded) return;
+        _loaded = true;
         _hand = await Task.Run(() => new ReportRepository(_host.Db).LoadReplayAsync(_handPk));
         if (_hand == null) { _header.Text = "Раздача не найдена"; return; }
-        _step = 0;
+        _first = _hand.Actions.FindIndex(a => IsDecision(a.Action));
+        if (_first < 0) _first = 0;
+        _step = _first;
         Render();
         await LoadHudAsync();
+        // Реплеер открывают, чтобы посмотреть раздачу: она начинает проигрываться сама, пробел — пауза.
+        Play();
+    }
+
+    /// <summary>
+    /// Ход раздачи текстом — вся раздача целиком, независимо от того, на каком шаге остановлен реплеер.
+    /// Суммы — в тех же единицах, что на столе (фишки или BB): так текст совпадает с тем, что видно в окне.
+    /// </summary>
+    private string Transcript()
+    {
+        var h = _hand!;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Раздача #{h.ExternalId}  {h.Table}  блайнды {Chips(h.Sb)}/{Chips(h.Bb)}{(h.Ante > 0 ? " анте " + Chips(h.Ante) : "")}  {h.PlayedAt.ToLocalTime():dd.MM.yyyy HH:mm}");
+        foreach (var seat in h.Seats.OrderBy(x => x.Seat))
+        {
+            string cards = seat.C1 is { } a && seat.C2 is { } b ? $"  [{a} {b}]" : "";
+            sb.AppendLine($"  {seat.Position,-4} {seat.Name}{(seat.IsHero ? " (Hero)" : "")}: {Amt(seat.StartStack)}{cards}");
+        }
+        var board = h.Boards.Count > 0 ? h.Boards[0] : new List<Card>();
+        var street = Street.Preflop;
+        bool posts = true;
+        foreach (var a in h.Actions)
+        {
+            if (IsDecision(a.Action) && (posts || a.Street != street))
+            {
+                posts = false;
+                street = a.Street;
+                var shown = street switch { Street.Flop => board.Take(3), Street.Turn => board.Take(4), Street.River => board.Take(5), _ => Enumerable.Empty<Card>() };
+                string cards = string.Join(" ", shown);
+                sb.AppendLine($"*** {street} ***{(cards.Length > 0 ? $"  [{cards}]" : "")}");
+            }
+            // Анте в ход раздачи не идут: восемь одинаковых строк ничего не сообщают — размер анте есть в шапке.
+            if (a.Action == ActionType.PostAnte) continue;
+            var name = h.Seats.FirstOrDefault(x => x.Seat == a.Seat)?.Name ?? $"Seat {a.Seat}";
+            string text = a.Action switch
+            {
+                ActionType.Raise => $"raises to {Amt(a.ToAmount)}",
+                ActionType.Fold or ActionType.Check => a.Action.ToString().ToLowerInvariant(),
+                ActionType.Call => $"calls {Amt(a.Amount)}",
+                ActionType.Bet => $"bets {Amt(a.Amount)}",
+                ActionType.UncalledReturn => $"uncalled {Amt(a.Amount)} returned",
+                ActionType.Collect => $"collects {Amt(a.Amount)}",
+                ActionType.PostSb => $"posts SB {Amt(a.Amount)}",
+                ActionType.PostBb or ActionType.PostBbOot => $"posts BB {Amt(a.Amount)}",
+                _ => $"{a.Action} {Amt(a.Amount)}",
+            } + (a.AllIn ? " (all-in)" : "");
+            sb.AppendLine($"{name}: {text}");
+        }
+        if (board.Count > 0) sb.AppendLine($"Борд: [{string.Join(" ", board)}]");
+        sb.AppendLine($"Банк: {Amt(h.TotalPot)}");
+        foreach (var seat in h.Seats.Where(x => x.NetWon != 0).OrderByDescending(x => x.NetWon))
+            sb.AppendLine($"  {seat.Name}: {(seat.NetWon > 0 ? "+" : "−")}{Amt(Math.Abs(seat.NetWon))}");
+        return sb.ToString();
+    }
+
+    private void CopyTranscript()
+    {
+        if (_hand == null) return;
+        ToClipboard(Transcript(), "Ход раздачи скопирован");
+    }
+
+    private async Task CopyRawAsync()
+    {
+        try
+        {
+            var text = await Task.Run(() => new ReportRepository(_host.Db).RawHandTextAsync(_handPk));
+            if (string.IsNullOrEmpty(text)) { _status.Text = "Исходного текста нет в базе"; return; }
+            ToClipboard(text, "Исходный текст скопирован");
+        }
+        catch (Exception ex) { _status.Text = "Не удалось прочитать текст: " + ex.Message; }
+    }
+
+    private void ToClipboard(string text, string done)
+    {
+        // Буфер обмена бывает занят другой программой — это не повод ронять реплеер.
+        try { Clipboard.SetText(text); _status.Text = done; }
+        catch (System.Runtime.InteropServices.ExternalException) { _status.Text = "Буфер обмена занят — повторите"; }
+    }
+
+    private static bool IsDecision(ActionType t) => t is ActionType.Fold or ActionType.Check or ActionType.Call or ActionType.Bet or ActionType.Raise;
+
+    private TimeSpan StepInterval() => TimeSpan.FromMilliseconds(900 / Math.Pow(2, Math.Max(0, _speed.SelectedIndex)));
+
+    private void Play()
+    {
+        if (_hand == null) return;
+        if (_step >= _hand.Actions.Count) { _step = _first; Render(); }   // с конца — заново
+        _play.Start();
+        _playButton.Content = "❚❚";
+    }
+
+    private void Pause()
+    {
+        _play.Stop();
+        _playButton.Content = "▶";
+    }
+
+    private void TogglePlay()
+    {
+        if (_play.IsEnabled) Pause(); else Play();
     }
 
     /// <summary>
@@ -101,9 +291,10 @@ public sealed class ReplayerWindow : Window
         foreach (var id in ids)
         {
             if (_agg.ContainsKey(id)) continue;
-            try { _agg[id] = await _host.Hud.GetAggAsync(id, kind); }
+            try { _agg[id] = await Task.Run(() => _host.Hud.GetAggAsync(id, kind)); }   // в фоне: UI-поток в базу не ходит
             catch (Exception) { /* нет агрегатов — панель просто покажет прочерки */ }
         }
+        _hudCache.Clear();
         Render();
     }
 
@@ -124,15 +315,21 @@ public sealed class ReplayerWindow : Window
     private void AddHudPanel(ReplaySeat seat, double cx, double cy, HudProfile profile)
     {
         if (seat.PlayerId == 0 || !_agg.TryGetValue(seat.PlayerId, out var agg)) return;
-        var page = profile.Panel;
-        var grid = new HudGridControl { Stats = _host.Hud.Stats, ShowTooltips = true };
-        grid.Render(page, agg.EvaluatePage(page));
+        if (_hudCache.TryGetValue(seat.Seat, out var cached)) { _canvas.Children.Add(cached); return; }
+        var pages = profile.AllPanelPages().ToList();
+        var tabbed = new HudTabbedGrid { StripFontSize = 13 };
+        var grid = tabbed.Grid;
+        grid.CellWeight = FontWeights.SemiBold;
+        grid.Stats = _host.Hud.Stats;
+        grid.ShowTooltips = true;
+        tabbed.Render(pages, pages.Select(pg => (CellValue[]?)agg.EvaluatePage(pg)).ToList());
         // Ячейка открывает тот же попап, что и за столом, и по тому же правилу: только если
         // вкладка к ней привязана в редакторе.
         FrameworkElement? hovered = null;
         PopupTarget? Target(int index)
         {
-            if (index < 0 || index >= page.Cells.Count || profile.Pages.Count == 0) return null;
+            var page = tabbed.Page;
+            if (page == null || index < 0 || index >= page.Cells.Count || profile.Pages.Count == 0) return null;
             if (page.Cells[index].Popup is not { } popup || profile.Page(popup) == null) return null;
             return new PopupTarget
             {
@@ -151,28 +348,46 @@ public sealed class ReplayerWindow : Window
         };
         var box = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(0xE0, 0x1E, 0x17, 0x12)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(0xB0, 0x6E, 0x4A, 0x2C)),
+            // Как панель над столом рума: чёрная подложка, тонкая серая рамка.
+            Background = new SolidColorBrush(Color.FromArgb(0xEB, 0x00, 0x00, 0x00)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x90, 0x3A, 0x3A, 0x3A)),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(3, 2, 3, 2),
-            Child = grid,
+            CornerRadius = new CornerRadius(2),
+            Padding = new Thickness(2, 1, 3, 2),
+            Child = tabbed,
         };
+        box.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double pw = box.DesiredSize.Width, ph = box.DesiredSize.Height;
         // Панель таскается правой кнопкой, как и за столом: левая занята попапами. Сдвиг
         // запоминается по месту за столом — панель мешает всегда в одном и том же месте.
-        string key = $"{_hand!.MaxSeats}:{seat.Seat}";
+        // «v2»: панели переехали наружу от мест, и сдвиги, сохранённые для прежней расстановки, к новой не подходят.
+        string key = $"v2:{_hand!.MaxSeats}:{seat.Seat}";
         var offset = _settings.ReplayerPanelOffsets.TryGetValue(key, out var saved) && saved.Length == 2
             ? saved : new double[2];
-        double baseX = cx - 75, baseY = cy - 23 - 8 - page.Rows * page.RowHeight - 6;
+        // Панель стоит снаружи от места: у боковых мест — сбоку, у верхних — над боксом, у нижних — под ним.
+        // Так она не закрывает ни бокс игрока, ни стол, ни соседние панели.
+        var (sideX, sideY) = PanelSide(cx, cy);
+        double baseX = sideX != 0 ? (sideX < 0 ? cx - 75 - 6 - pw : cx + 75 + 6) : cx - 75;
+        double baseY = sideX != 0 ? cy - ph / 2 : sideY < 0 ? cy - 23 - 6 - ph : cy + 23 + 6;
         Place();
         DragWithRightButton(box, offset, key, Place);
+        _hudCache[seat.Seat] = box;
         _canvas.Children.Add(box);
 
         void Place()
         {
-            Canvas.SetLeft(box, Math.Clamp(baseX + offset[0], 0, Math.Max(0, _canvas.Width - 40)));
-            Canvas.SetTop(box, Math.Clamp(baseY + offset[1], 0, Math.Max(0, _canvas.Height - 20)));
+            // Целиком в пределах холста: за его краем панель наезжала бы на журнал действий справа.
+            Canvas.SetLeft(box, Math.Clamp(baseX + offset[0], 0, Math.Max(0, _canvas.Width - pw)));
+            Canvas.SetTop(box, Math.Clamp(baseY + offset[1], 0, Math.Max(0, _canvas.Height - ph)));
         }
+    }
+
+    /// <summary>С какой стороны от места ставить панель HUD: (−1/+1, 0) — слева/справа, (0, −1/+1) — над/под боксом.</summary>
+    private static (int X, int Y) PanelSide(double cx, double cy)
+    {
+        double dx = (cx - CX) / RX, dy = (cy - CY) / RY;
+        if (Math.Abs(dx) > 0.8) return (dx < 0 ? -1 : 1, 0);
+        return (0, dy < 0 ? -1 : 1);
     }
 
     /// <summary>
@@ -217,6 +432,7 @@ public sealed class ReplayerWindow : Window
         {
             _settings.ReplayerProfile = name;
             _settings.Save();
+            _hudCache.Clear();
             _ = LoadHudAsync();
             Render();
         });
@@ -233,13 +449,19 @@ public sealed class ReplayerWindow : Window
         _canvas.Children.Add(_badge);
     }
 
-    private string Amt(long v) => _hand!.Kind == GameKind.Cash ? $"${v / 100.0:0.00}" : (v / 100.0).ToString("#,0");
+    /// <summary>Сумма в единицах раздачи: доллары в кеше, фишки в турнире.</summary>
+    private string Chips(long v) => _hand!.Kind == GameKind.Cash ? $"${v / 100.0:0.00}" : (v / 100.0).ToString("#,0");
+
+    /// <summary>Сумма для стола и журнала: в больших блайндах, если включён режим «BB», иначе в фишках.</summary>
+    private string Amt(long v) => _settings.ReplayerInBb && _hand!.Bb > 0
+        ? ((double)v / _hand.Bb).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " bb"
+        : Chips(v);
 
     private void Render()
     {
         var h = _hand;
         if (h == null) return;
-        _header.Text = $"#{h.ExternalId}  {h.Table}  {Amt(h.Sb)}/{Amt(h.Bb)}{(h.Ante > 0 ? " ante " + Amt(h.Ante) : "")}  " +
+        _header.Text = $"#{h.ExternalId}  {h.Table}  {Chips(h.Sb)}/{Chips(h.Bb)}{(h.Ante > 0 ? " ante " + Chips(h.Ante) : "")}  " +
                        $"{h.PlayedAt.ToLocalTime():dd.MM.yyyy HH:mm:ss}  банк {Amt(h.TotalPot)}" +
                        (h.Flags.HasFlag(HandFlags.RunItTwice) ? "  RUN IT TWICE" : "") + (h.Flags.HasFlag(HandFlags.BombPot) ? "  BOMB POT" : "");
 
@@ -288,6 +510,14 @@ public sealed class ReplayerWindow : Window
             _log.Items.Add($"{name}: {text}");
         }
         bool finished = _step >= h.Actions.Count;
+        // Торги улицы закончены, следующее решение — уже на новой: её карты на столе видны до первого хода,
+        // иначе кнопка «Flop» показывала бы стол ещё без флопа.
+        if (!finished && IsDecision(h.Actions[_step].Action) && h.Actions[_step].Street > street)
+        {
+            street = h.Actions[_step].Street;
+            streetPut.Clear();
+            lastAction.Clear();
+        }
         if (finished) _log.Items.Add("*** Итог ***");
         _log.ScrollIntoView(_log.Items.Count > 0 ? _log.Items[^1] : null);
 
@@ -295,10 +525,10 @@ public sealed class ReplayerWindow : Window
         var felt = new Ellipse
         {
             Width = 620, Height = 300,
-            Fill = new RadialGradientBrush(Color.FromRgb(0x5A, 0x40, 0x2C), Color.FromRgb(0x2A, 0x1E, 0x16)),
-            Stroke = new LinearGradientBrush(Color.FromRgb(0x8A, 0x5E, 0x38), Color.FromRgb(0x3A, 0x28, 0x1B), 90), StrokeThickness = 16,
+            Fill = new RadialGradientBrush(Color.FromRgb(0x45, 0x3F, 0x86), Color.FromRgb(0x23, 0x21, 0x3C)),
+            Stroke = new LinearGradientBrush(Color.FromRgb(0x5A, 0x52, 0xB0), Color.FromRgb(0x2E, 0x2B, 0x52), 90), StrokeThickness = 16,
         };
-        Canvas.SetLeft(felt, 100); Canvas.SetTop(felt, 90);
+        Canvas.SetLeft(felt, CX - 310); Canvas.SetTop(felt, CY - 150);
         _canvas.Children.Add(felt);
 
         // Доски: видимая часть зависит от улицы; в конце — полностью (при RIT — обе)
@@ -308,9 +538,9 @@ public sealed class ReplayerWindow : Window
             if (b > 0 && !finished) break;
             var cards = h.Boards[b].Take(visible).ToList();
             for (int i = 0; i < cards.Count; i++)
-                AddCard(cards[i], 300 + i * 46, (h.Boards.Count > 1 && finished ? 190 + b * 66 : 215));
+                AddCard(cards[i], CX - 110 + i * 46, (h.Boards.Count > 1 && finished ? CY - 50 + b * 66 : CY - 25));
         }
-        AddText($"Банк: {Amt(pot)}", 360, 290, 14, Brushes.White);
+        AddText($"Банк: {Amt(pot)}", CX - 50, CY + 50, 14, Brushes.White);
 
         int max = Math.Max(h.MaxSeats, 2);
         int heroSeat = h.Seats.FirstOrDefault(s => s.IsHero)?.Seat ?? 1;
@@ -319,13 +549,13 @@ public sealed class ReplayerWindow : Window
         {
             int v = ((s.Seat - heroSeat) % max + max) % max;
             double angle = Math.PI / 2 + v * 2 * Math.PI / max;
-            double cx = 410 + 350 * Math.Cos(angle), cy = 240 + 190 * Math.Sin(angle);
+            double cx = CX + RX * Math.Cos(angle), cy = CY + RY * Math.Sin(angle);
             bool isFolded = folded.Contains(s.Seat);
             var box = new Border
             {
                 Width = 150, Height = 46, CornerRadius = new CornerRadius(6),
-                Background = new SolidColorBrush(isFolded ? Color.FromRgb(0x2A, 0x24, 0x20) : Color.FromRgb(0x1E, 0x17, 0x12)),
-                BorderBrush = new SolidColorBrush(s.IsHero ? Color.FromRgb(0xD0, 0x8A, 0x4A) : Color.FromRgb(0x40, 0x33, 0x2A)), BorderThickness = new Thickness(s.IsHero ? 2 : 1),
+                Background = new SolidColorBrush(isFolded ? Color.FromRgb(0x25, 0x24, 0x3C) : Color.FromRgb(0x1A, 0x19, 0x30)),
+                BorderBrush = new SolidColorBrush(s.IsHero ? Color.FromRgb(0x7C, 0x6F, 0xF0) : Color.FromRgb(0x37, 0x35, 0x5A)), BorderThickness = new Thickness(s.IsHero ? 2 : 1),
                 Opacity = isFolded ? 0.6 : 1,
                 Child = new StackPanel
                 {
@@ -349,11 +579,13 @@ public sealed class ReplayerWindow : Window
             // Карты оппонентов — только если были вскрыты; Hero — всегда
             if (s.C1 is { } c1 && s.C2 is { } c2 && (s.IsHero || finished || !isFolded))
             {
-                AddCard(c1, cx - 44, cy - 72, 0.8);
-                AddCard(c2, cx - 4, cy - 72, 0.8);
+                // Карты — со стороны стола: над боксом у нижних и боковых мест, под ним у верхних (там над боксом панель HUD).
+                double cardY = PanelSide(cx, cy) is (0, -1) ? cy + 27 : cy - 72;
+                AddCard(c1, cx - 44, cardY, 0.8);
+                AddCard(c2, cx - 4, cardY, 0.8);
             }
             if (streetPut.GetValueOrDefault(s.Seat) > 0 && !finished)
-                AddText(Amt(streetPut[s.Seat]), 410 + 230 * Math.Cos(angle) - 20, 240 + 110 * Math.Sin(angle) - 8, 12, new SolidColorBrush(Color.FromRgb(0xE3, 0xA4, 0x5A)));
+                AddText(Amt(streetPut[s.Seat]), CX + 215 * Math.Cos(angle) - 20, CY + 95 * Math.Sin(angle) - 8, 12, new SolidColorBrush(Color.FromRgb(0x9C, 0x92, 0xF8)));
 
             if (profile != null) AddHudPanel(s, cx, cy, profile);
         }

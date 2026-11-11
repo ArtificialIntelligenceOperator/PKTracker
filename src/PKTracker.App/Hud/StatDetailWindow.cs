@@ -95,7 +95,7 @@ public sealed class StatDetailWindow : Window, IPinnable
         Content = new Border
         {
             Background = Res("Bg1"), BorderBrush = Res("AccentDim"), BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6), Child = _root, MaxWidth = 640,
+            CornerRadius = new CornerRadius(6), Child = _root, MaxWidth = 920,   // матрица рук и сила руки рядом — около 880
         };
         SourceInitialized += (_, _) =>
         {
@@ -179,16 +179,42 @@ public sealed class StatDetailWindow : Window, IPinnable
         var tabs = new TabControl
         {
             Background = Brushes.Transparent, BorderThickness = new Thickness(0), Margin = new Thickness(0, 6, 0, 0),
+            ItemContainerStyle = (Style)Application.Current.FindResource("SubTab"),
         };
 
         // Вкладка на каждое действие, которое в этом споте вообще встречалось: «чем рейзил»,
         // «чем коллировал», «что сбрасывал» — рядом.
-        foreach (var choice in new[] { Choice.Raise, Choice.Bet, Choice.Call, Choice.Check, Choice.Fold })
+        // За столом на румах со «статичным» HUD диапазоны по вскрытым картам запрещены (iPoker, Winamax, Stars):
+        // в реплеере и отчётах их показывать можно — это разбор после игры.
+        bool rangesBanned = _overlay && RoomHudPolicy.For(_host.Db.RoomCode).StaticOnly;
+        if (rangesBanned)
+            tabs.Items.Add(Tab("Диапазоны", new TextBlock
+            {
+                Text = "Диапазоны по вскрытым картам за столом скрыты: правила рума разрешают только числовой HUD. " +
+                       "Откройте этот стат из реплеера или вкладки «Игроки».",
+                TextWrapping = TextWrapping.Wrap, Margin = new Thickness(8), Opacity = 0.8,
+            }));
+        // Первая вкладка — то, ради чего стат наводят мышью: с какими руками это делалось (матрица 13×13)
+        // и какой силы была рука на этой улице. Рядом, а не на разных вкладках: читается одним взглядом.
+        if (!rangesBanned && data.KnownHands > 0)
+        {
+            var both = new StackPanel { Orientation = Orientation.Horizontal };
+            both.Children.Add(RangePane(data.RangeHits, "Вскрытые руки в срабатываниях стата"));
+            // Диаграмма силы — категории в постоянном порядке; наведение на категорию показывает сами раздачи.
+            if (stat.Scope == StatScope.Decision && data.Strength.Count > 0)
+                both.Children.Add(new Border
+                {
+                    Margin = new Thickness(16, 0, 0, 0),
+                    Child = Views.HandLineView.StrengthDiagram(data.Strength, data.Lines, showHole: true),
+                });
+            tabs.Items.Add(Tab("Руки и сила", both));
+        }
+        foreach (var choice in rangesBanned ? Array.Empty<Choice>() : new[] { Choice.Raise, Choice.Bet, Choice.Call, Choice.Check, Choice.Fold })
         {
             if (!data.RangeByAction.TryGetValue(choice, out var range) || range.Sum() == 0) continue;
             tabs.Items.Add(Tab(ChoiceName(choice), RangePane(range, $"Руки, с которыми выбрано «{ChoiceName(choice)}» в этом споте")));
         }
-        if (data.KnownHands > 0 || tabs.Items.Count == 0)
+        if (!rangesBanned && tabs.Items.Count == 0)
             tabs.Items.Add(Tab("Диапазон", RangePane(data.RangeHits, "Вскрытые руки в срабатываниях стата")));
 
         tabs.Items.Add(Tab("Позиции", Stack(
@@ -198,10 +224,13 @@ public sealed class StatDetailWindow : Window, IPinnable
         {
             tabs.Items.Add(Tab("Next Actions", Counts("Следующее решение после срабатывания стата", data.NextActions)));
             tabs.Items.Add(Tab("Сайзинги", Counts("Размер ставки/рейза в % банка", data.BetSizing)));
-            tabs.Items.Add(Tab("Сила руки", Counts("Категория руки на улице (только известные карты)", data.HandStrength)));
+            // Сила руки считается по вскрытым картам — на румах со статичным HUD за столом она скрыта, как и диапазоны.
+            // Без вскрытых рук первой вкладки нет — сила руки остаётся отдельной (пустой список тоже ответ).
+            if (!rangesBanned && data.KnownHands == 0)
+                tabs.Items.Add(Tab("Сила руки", Counts("Сила руки на улице (только известные карты)", data.HandStrength)));
             tabs.Items.Add(Tab("Борды", Counts("Текстура борда (доля от срабатываний)", data.Boards)));
         }
-        tabs.Items.Add(Tab("Руки", HandsList(data)));
+        tabs.Items.Add(Tab("Руки", HandsList(data, showCards: !rangesBanned)));
         return tabs;
     }
 
@@ -216,7 +245,7 @@ public sealed class StatDetailWindow : Window, IPinnable
         Content = new ScrollViewer
         {
             Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 380, Padding = new Thickness(0, 8, 4, 0),
+            MaxHeight = 450, Padding = new Thickness(0, 8, 4, 0),   // матрица 13 рядов с подписью помещается без прокрутки
         },
     };
 
@@ -240,14 +269,17 @@ public sealed class StatDetailWindow : Window, IPinnable
         });
         long max = Math.Max(1, range.Max());
         var grid = new UniformGrid { Rows = 13, Columns = 13, Width = 13 * 42, Height = 13 * 30 };
-        var accent = ((SolidColorBrush)Res("Accent")).Color;
-        var empty = ((SolidColorBrush)Res("Bg2")).Color;
+        // Матрица — в зелёной гамме, как привыкли по Hand2Note: чем чаще рука, тем ярче зелёный; рук нет — тёмно-серая
+        // клетка. Один тон от тёмного к яркому — это величина, а не категории; число раздач в клетке есть всегда.
+        var low = Color.FromRgb(0x1F, 0x8F, 0x35);
+        var high = Color.FromRgb(0x4D, 0xF2, 0x4D);
+        var empty = Color.FromRgb(0x2A, 0x2A, 0x30);
         for (int cls = 0; cls < 169; cls++)
         {
             long n = range[cls];
-            double t = n == 0 ? 0 : 0.25 + 0.75 * n / max;
-            var color = Color.FromRgb((byte)(empty.R + (accent.R - empty.R) * t), (byte)(empty.G + (accent.G - empty.G) * t),
-                (byte)(empty.B + (accent.B - empty.B) * t));
+            double t = n == 0 ? 0 : (double)n / max;
+            var color = n == 0 ? empty : Color.FromRgb((byte)(low.R + (high.R - low.R) * t), (byte)(low.G + (high.G - low.G) * t),
+                (byte)(low.B + (high.B - low.B) * t));
             grid.Children.Add(new Border
             {
                 Background = new SolidColorBrush(color), BorderBrush = Res("Bg0"), BorderThickness = new Thickness(0.5),
@@ -260,6 +292,8 @@ public sealed class StatDetailWindow : Window, IPinnable
                         new TextBlock
                         {
                             Text = Card.HoleClassName(cls), FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center,
+                            FontWeight = n > 0 ? FontWeights.SemiBold : FontWeights.Normal,
+                            // На зелёном — чёрный текст (контраст от 5:1 даже на самом тёмном зелёном), на пустых клетках — приглушённый.
                             Foreground = n > 0 ? Brushes.Black : Res("TextDim"),
                         },
                         new TextBlock
@@ -303,17 +337,19 @@ public sealed class StatDetailWindow : Window, IPinnable
     }
 
     /// <summary>Горизонтальные полосы долей.</summary>
-    private static UIElement Counts(string title, List<CountRow> rows)
+    /// <param name="width">Ширина строки: рядом с матрицей рук список уже, чем на отдельной вкладке.</param>
+    private static UIElement Counts(string title, List<CountRow> rows, double width = 540)
     {
+        bool narrow = width < 400;
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = title, Foreground = Res("TextDim"), Margin = new Thickness(0, 0, 0, 8), TextWrapping = TextWrapping.Wrap });
         if (rows.Count == 0) panel.Children.Add(new TextBlock { Text = "нет данных", Foreground = Res("TextDim") });
         foreach (var r in rows)
         {
-            var g = new Grid { Margin = new Thickness(0, 2, 0, 2), Width = 540, HorizontalAlignment = HorizontalAlignment.Left };
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(220) });
+            var g = new Grid { Margin = new Thickness(0, 2, 0, 2), Width = width, HorizontalAlignment = HorizontalAlignment.Left };
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(narrow ? 140 : 220) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(narrow ? 76 : 90) });
             AddCell(g, r.Key, 0, Res("Text"));
             var track = new Border { Background = Res("Bg2"), CornerRadius = new CornerRadius(3), Height = 12, VerticalAlignment = VerticalAlignment.Center };
             var bar = new Border { Background = Res("Accent"), CornerRadius = new CornerRadius(3), Height = 12, HorizontalAlignment = HorizontalAlignment.Left };
@@ -329,15 +365,29 @@ public sealed class StatDetailWindow : Window, IPinnable
         return panel;
     }
 
-    private UIElement HandsList(StatPopupData data)
+    private UIElement HandsList(StatPopupData data, bool showCards)
     {
+        // Раздачи строками, как в Hand2Note: карты, борд по улицам, банк и действия буквами — линию видно без реплеера.
+        if (data.Lines.Count > 0)
+        {
+            var host2 = _host;
+            var lines = data.Hands.Select(h => h.HandPk).Distinct().Select(pk => data.Lines.GetValueOrDefault(pk)).Where(l => l != null).Select(l => l!);
+            return Stack(
+                new TextBlock
+                {
+                    Text = "Последние срабатывания стата. Подчёркнуты действия этого игрока; двойной клик — реплеер.",
+                    Foreground = Res("TextDim"), Margin = new Thickness(0, 0, 0, 6),
+                },
+                Views.HandLineView.List(lines, showCards, pk => new ReplayerWindow(host2, pk).Show()));
+        }
         var grid = new DataGrid { Height = 320, Width = 560, ItemsSource = data.Hands, IsReadOnly = true, AutoGenerateColumns = false };
         grid.Columns.Add(new DataGridTextColumn { Header = "Время (UTC)", Binding = new Binding(nameof(PopupHand.PlayedAt)) { StringFormat = "dd.MM HH:mm" } });
         grid.Columns.Add(new DataGridTextColumn { Header = "Улица", Binding = new Binding(nameof(PopupHand.Street)) });
         grid.Columns.Add(new DataGridTextColumn { Header = "Поз.", Binding = new Binding(nameof(PopupHand.Position)) });
         grid.Columns.Add(new DataGridTextColumn { Header = "Действие", Binding = new Binding(nameof(PopupHand.Action)) });
         grid.Columns.Add(new DataGridTextColumn { Header = "Размер, %", Binding = new Binding(nameof(PopupHand.SizePct)) });
-        grid.Columns.Add(new DataGridTextColumn { Header = "Карты", Binding = new Binding(nameof(PopupHand.Cards)), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
+        if (showCards)
+            grid.Columns.Add(new DataGridTextColumn { Header = "Карты", Binding = new Binding(nameof(PopupHand.Cards)), Width = new DataGridLength(1, DataGridLengthUnitType.Star) });
         var host = _host;
         grid.MouseDoubleClick += (_, _) =>
         {

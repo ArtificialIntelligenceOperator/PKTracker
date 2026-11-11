@@ -12,7 +12,27 @@ public interface IHandHistoryParser
 
     /// <summary>Разбирает текст (с \n или \r\n). Смещения — в символах от начала <paramref name="text"/> + baseOffset.</summary>
     IEnumerable<HandParseResult> Parse(string text, HandSourceInfo source, long baseOffset = 0);
+
+    /// <summary>Как в файле этого формата понять, что раздача дописана до конца (импорт дописываемых файлов).</summary>
+    HandBoundary Boundary { get; }
 }
+
+/// <summary>
+/// Границы раздачи в файле истории. Клиент рума дописывает файл во время игры, и импорт обязан
+/// брать только завершённые раздачи; признаки завершённости у форматов разные, поэтому их задаёт парсер.
+/// </summary>
+/// <param name="Starts">С чего начинается строка-заголовок раздачи.</param>
+/// <param name="EndMarker">
+/// Текстовые форматы: метка итогов («*** SUMMARY ***») — после неё ещё идут строки, поэтому раздача
+/// считается дописанной, только когда началась следующая или файл перестал меняться.
+/// При <paramref name="ClosedByMarker"/> — закрывающий тег, которым раздача заканчивается (iPoker: «&lt;/game&gt;»).
+/// </param>
+/// <param name="ClosedByMarker">Раздача завершена ровно тогда, когда встретился <paramref name="EndMarker"/>.</param>
+/// <param name="WholeFile">
+/// Дописанный кусок нельзя разбирать отдельно от начала файла (в iPoker ник и турнир — в заголовке сессии):
+/// дозор перечитывает файл целиком, дубликаты отсеивает импорт.
+/// </param>
+public sealed record HandBoundary(string[] Starts, string EndMarker, bool ClosedByMarker = false, bool WholeFile = false);
 
 /// <summary>Живой канал рассадки (только "кто где сидит" — §0.2, §0.4).</summary>
 public interface ILiveTableFeed

@@ -7,6 +7,9 @@ namespace PKTracker.Data;
 
 public sealed record CountRow(string Key, long Count, double Pct);
 
+/// <summary>Строка «постфлоп-диаграммы»: категория силы руки, сколько раз встретилась и примеры раздач (для подсказки).</summary>
+public sealed record StrengthCat(int Index, string Label, long Count, double Pct, IReadOnlyList<long> HandPks);
+
 public sealed record PopupHand(long HandPk, DateTime PlayedAt, string Street, Position Position, string Action, string? Cards, short? SizePct);
 
 /// <summary>Содержимое попапа стата (§5.4).</summary>
@@ -20,6 +23,10 @@ public sealed class StatPopupData
     public List<CountRow> NextActions { get; } = new();
     public List<CountRow> BetSizing { get; } = new();
     public List<CountRow> HandStrength { get; } = new();
+    /// <summary>Диаграмма силы руки по категориям в постоянном порядке (от воздуха к сильным); пусто — вскрытых рук нет.</summary>
+    public List<StrengthCat> Strength { get; } = new();
+    /// <summary>Раздачи одной строкой (карты, действия по улицам) — для вкладки «Руки» и подсказок диаграммы.</summary>
+    public Dictionary<long, HandLine> Lines { get; set; } = new();
     public List<CountRow> Boards { get; } = new();
     /// <summary>13×13: сколько раз в спот (hits) показана каждая рука — только вскрытые карты (§7 Range Research).</summary>
     public long[] RangeHits { get; } = new long[169];
@@ -92,13 +99,14 @@ public sealed class StatPopupService(TrackerDb db)
     private async Task<StatPopupData> LoadDecisionStatAsync(long playerId, CompiledStat stat, short[] kinds, CancellationToken ct)
     {
         await using var conn = await db.Reports.OpenConnectionAsync(ct);
-        await using var cmd = new NpgsqlCommand("""
+        await using var cmd = new NpgsqlCommand($"""
             SELECT d.hand_pk, d.seq, d.seat, d.street, d.position, d.facing, d.bet_level, d.my_last_level, d.to_call, d.pot_before,
                    d.eff_stack, d.players_in, d.players_behind, d.num_limpers, d.num_callers, d.ctx_bits, d.chosen, d.chosen_amount,
                    d.size_pct, d.is_all_in, d.hand_strength, d.board_texture, d.stack_bucket,
                    d.vs_position, d.opener_position, d.to_amount, d.line_bits, d.facing_amount,
                    h.game_kind, h.flags, h.players_dealt, h.max_seats, h.sb, h.bb, h.ante,
-                   h.played_at, hp.hole_card1, hp.hole_card2, hp.hole_class, hp.fact_bits, hp.net_won_bb_x100
+                   h.played_at, hp.hole_card1, hp.hole_card2, hp.hole_class, hp.fact_bits, hp.net_won_bb_x100,
+                   {DecisionColumns.Select("d")}
               FROM hand_decisions d
               JOIN hands h ON h.hand_pk = d.hand_pk
               LEFT JOIN hand_players hp ON hp.hand_pk = d.hand_pk AND hp.seat = d.seat
@@ -118,6 +126,7 @@ public sealed class StatPopupService(TrackerDb db)
             {
                 long pk = r.GetInt64(0);
                 if (!infos.TryGetValue(pk, out var info)) infos[pk] = info = Info(r, 28);
+                var x = DecisionColumns.Read(r, 41);
                 var dp = new DecisionPoint
                 {
                     Hand = info, Seq = r.GetInt16(1), Seat = (byte)r.GetInt16(2), PlayerName = "",
@@ -131,6 +140,10 @@ public sealed class StatPopupService(TrackerDb db)
                     StackBucket = (byte)r.GetInt16(22),
                     VsPosition = (Position)r.GetInt16(23), OpenerPosition = (Position)r.GetInt16(24), ToAmount = r.GetInt64(25),
                     LineBits = r.GetInt16(26), FacingAmount = r.GetInt64(27),
+                    PfaLineBits = x.PfaLine, OppLineBits = x.OppLine, PotRaises = x.PotRaises, PfLimpers = x.PfLimpers,
+                    PfrPosition = x.PfrPos, FlopPlayers = x.FlopPlayers, FlopMask = x.FlopMask, VsStack = x.VsStack,
+                    StartEffStack = x.StartEff, CallersBefore3b = x.CallersBefore3b, MadeHandBits = x.MadeHand,
+                    Outcome = r.IsDBNull(39) ? 0 : (FactBits)r.GetInt64(39),
                 };
                 rows.Add((dp, pk, r.GetDateTime(35), r.IsDBNull(36) ? null : r.GetInt16(36), r.IsDBNull(37) ? null : r.GetInt16(37),
                     r.IsDBNull(38) ? null : r.GetInt16(38), r.IsDBNull(39) ? 0 : (FactBits)r.GetInt64(39),
@@ -144,6 +157,8 @@ public sealed class StatPopupService(TrackerDb db)
         var sizing = new Dictionary<string, long>();
         var strength = new Dictionary<string, long>();
         var boards = new Dictionary<string, long>();
+        var catCount = new long[MadeHands.StrengthCategories.Length];
+        var catHands = new List<long>[catCount.Length];
         long cases = 0, hits = 0, known = 0;
         long lastOutcomeHand = -1;
         var data = new StatPopupData { Scanned = rows.Count };
@@ -175,7 +190,16 @@ public sealed class StatPopupService(TrackerDb db)
             else Inc(next, "решений больше нет");
 
             if (dp.SizePct is { } size) Inc(sizing, SizeBucket(size));
-            if (dp.HandStrength is { } hs) Inc(strength, ((HandCategory)hs).ToString());
+            // Сила руки — по подробному классу (топ-пара, оверпара, дро…); у раздач, разобранных до него, — по категории.
+            if (dp.MadeKnown)
+            {
+                Inc(strength, AnalyticsRepository.StrengthGroup(dp.MadeHandBits).Label);
+                int cat = MadeHands.StrengthCategory(dp.MadeHandBits, c1 is { } hc1 ? new Card((byte)hc1) : null, c2 is { } hc2 ? new Card((byte)hc2) : null);
+                catCount[cat]++;
+                var examples = catHands[cat] ??= new List<long>();
+                if (examples.Count < 12 && !examples.Contains(pk)) examples.Add(pk);
+            }
+            else if (dp.HandStrength is { } hs) Inc(strength, ((HandCategory)hs).ToString());
             if (dp.Street != Street.Preflop) foreach (var t in TextureNames(dp.BoardTexture)) Inc(boards, t);
             if (cls is { } k) { data.RangeHits[k]++; known++; }
 
@@ -195,6 +219,14 @@ public sealed class StatPopupService(TrackerDb db)
         Fill(data.BetSizing, sizing, hits, ordered: true);
         Fill(data.HandStrength, strength, strength.Values.Sum());
         Fill(data.Boards, boards, hits);
+        long catTotal = catCount.Sum();
+        if (catTotal > 0)
+            for (int i = 0; i < catCount.Length; i++)
+                data.Strength.Add(new StrengthCat(i, MadeHands.StrengthCategories[i], catCount[i], catCount[i] * 100.0 / catTotal,
+                    (IReadOnlyList<long>?)catHands[i] ?? Array.Empty<long>()));
+        // Линии раздач: для списка «Руки» и для подсказок по категориям диаграммы — одним запросом на всё.
+        var need = data.Hands.Select(h => h.HandPk).Concat(data.Strength.SelectMany(c => c.HandPks)).Distinct().ToList();
+        data.Lines = await HandLineLoader.LoadAsync(conn, need, playerId, ct);
         return data;
     }
 

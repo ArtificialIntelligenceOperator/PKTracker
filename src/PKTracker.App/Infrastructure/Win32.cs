@@ -156,9 +156,9 @@ public static partial class Win32
             var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
             int on = 1;
             DwmSetWindowAttribute(hwnd, 20, ref on, sizeof(int));        // DWMWA_USE_IMMERSIVE_DARK_MODE
-            int caption = 0x00151A21;                                    // COLORREF 0x00BBGGRR → #211A15
+            int caption = 0x00301C1D;                                    // COLORREF 0x00BBGGRR → #1D1C30
             DwmSetWindowAttribute(hwnd, 35, ref caption, sizeof(int));   // DWMWA_CAPTION_COLOR
-            int text = 0x00DAE6EF;                                       // #EFE6DA
+            int text = 0x00F8F0F1;                                       // #F1F0F8
             DwmSetWindowAttribute(hwnd, 36, ref text, sizeof(int));      // DWMWA_TEXT_COLOR
         }
         if (new System.Windows.Interop.WindowInteropHelper(window).Handle != IntPtr.Zero) Apply();

@@ -426,7 +426,9 @@ public sealed class HandImporter
             COPY hand_decisions (hand_pk, seq, seat, player_id, street, position, facing, bet_level, my_last_level, to_call,
                                  pot_before, eff_stack, players_in, players_behind, num_limpers, num_callers, ctx_bits, chosen,
                                  chosen_amount, size_pct, is_all_in, hand_strength, board_texture, stack_bucket,
-                                 vs_position, opener_position, to_amount, line_bits, facing_amount)
+                                 vs_position, opener_position, to_amount, line_bits, facing_amount,
+                                 pfa_line_bits, opp_line_bits, pot_raises, pf_limpers, pfr_position, flop_players, flop_mask,
+                                 vs_stack, start_eff_stack, callers_before_3b, made_hand)
             FROM STDIN (FORMAT BINARY)
             """, ct);
         for (int i = 0; i < c.Count; i++)
@@ -463,6 +465,17 @@ public sealed class HandImporter
                 await w.WriteAsync(d.ToAmount, NpgsqlDbType.Bigint, ct);
                 await w.WriteAsync(d.LineBits, NpgsqlDbType.Smallint, ct);
                 await w.WriteAsync(d.FacingAmount, NpgsqlDbType.Bigint, ct);
+                await w.WriteAsync(d.PfaLineBits, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync(d.OppLineBits, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync((short)d.PotRaises, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync((short)d.PfLimpers, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync((short)d.PfrPosition, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync((short)d.FlopPlayers, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync(d.FlopMask, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync(d.VsStack, NpgsqlDbType.Bigint, ct);
+                await w.WriteAsync(d.StartEffStack, NpgsqlDbType.Bigint, ct);
+                await w.WriteAsync((short)d.CallersBefore3b, NpgsqlDbType.Smallint, ct);
+                await w.WriteAsync(d.MadeHandBits, NpgsqlDbType.Smallint, ct);
             }
         }
         await w.CompleteAsync(ct);
